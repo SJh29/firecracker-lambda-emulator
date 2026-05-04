@@ -10,6 +10,5 @@ squashfs-root/
 *.pub
 *.env
 *.ext4
-release-*/
 firecracker
 jailer
