@@ -10,9 +10,9 @@ log "Stage 1: TAP setup"
 
 # requirements check
 if ! command -v jq &>/dev/null; then
-    error "jq is required to detect the host network interface."
-    error "Install with: sudo apt-get install jq"
-    exit 1
+  error "jq is required to detect the host network interface."
+  error "Install with: sudo apt-get install jq"
+  exit 1
 fi
 
 # Delete any stale tap from a previous run, then recreate it cleanly.

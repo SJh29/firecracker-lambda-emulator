@@ -23,11 +23,11 @@ log "Logger configured → $LOGFILE"
 # console=ttyS0  — send kernel output to the serial console
 # reboot=k       — treat a reboot syscall as a full halt (Firecracker exits)
 # panic=1        — reboot (i.e. halt) 1 second after a kernel panic
-KERNEL_BOOT_ARGS="console=ttyS0 reboot=k panic=1"
+KERNEL_BOOT_ARGS="console=ttyS0 reboot=k panic=1 init=/var/runtime/bootstrap handler=function.handler"
 
 # aarch64 needs keep_bootcon to preserve early boot messages on the console
 if [ "$(uname -m)" = "aarch64" ]; then
-    KERNEL_BOOT_ARGS="keep_bootcon ${KERNEL_BOOT_ARGS}"
+  KERNEL_BOOT_ARGS="keep_bootcon ${KERNEL_BOOT_ARGS}"
 fi
 
 fc_api PUT /boot-source "{
@@ -71,3 +71,4 @@ log "Network interface attached (MAC=$FC_MAC → $TAP_DEV)"
 sleep 0.015
 
 success "Stage 3 complete: microVM configured"
+
