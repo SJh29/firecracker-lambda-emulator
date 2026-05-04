@@ -2,15 +2,15 @@
 # =============================================================================
 # lambda_orchestrator.sh — Terminal 2 orchestrator
 #
-# Requires start_firecracker.sh to already be running in another terminal.
+# Requires run_firecracker.sh to already be running in another terminal.
 #
 # Calls each stage script in order:
-#   01_tap_setup.sh       Host TAP interface + NAT
-#   02_configure_vm.sh    Logger, kernel, rootfs, NIC via API socket
-#   03_start_vm.sh        InstanceStart
-#   04_guest_network.sh   SSH wait, default route, DNS
-#   05_deploy_function.sh SCP runtime + function, start HTTP server
-#   06_invoke.sh          POST payload, print response
+#   01_tap_setup.sh            Host TAP interface + NAT
+#   02_build_function_drive.sh Build ext4 drive containing function.py
+#   03_configure_vm.sh         Logger, kernel, rootfs, function drive, NIC via API socket
+#   04_initialize_vm.sh        InstanceStart
+#   05_wait_for_rie.sh         Poll RIE /ping until guest runtime is ready
+#   06_invoke.sh               POST payload, print response
 #
 # Usage:
 #   ./lambda_orchestrator.sh [OPTIONS]
@@ -24,7 +24,7 @@
 #   -h, --help              Show this help
 # =============================================================================
 
-
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/common.sh"
@@ -44,7 +44,7 @@ while [[ $# -gt 0 ]]; do
         -P|--payload-file) PAYLOAD_FILE="$2";   shift 2 ;;
         -t|--timeout)      TIMEOUT="$2";        shift 2 ;;
         -k|--keep-alive)   KEEP_ALIVE=true;     shift   ;;
-        -h|--help) sed -n '3,20p' "$0" | sed 's/^# \{0,2\}//'; exit 0 ;;
+        -h|--help) sed -n '3,22p' "$0" | sed 's/^# \{0,2\}//'; exit 0 ;;
         *) error "Unknown option: $1"; exit 1 ;;
     esac
 done
@@ -54,27 +54,27 @@ done
 # ── Preflight checks ──────────────────────────────────────────────────────────
 [[ -S "$API_SOCKET" ]] || {
     error "Firecracker API socket not found at $API_SOCKET"
-    error "Run ./start_firecracker.sh in another terminal first."
+    error "Run ./run_firecracker.sh in another terminal first."
     exit 1
 }
 
-KERNEL="./$(ls vmlinux* 2>/dev/null | tail -1 || true)"
-ROOTFS="./$(ls *.ext4  2>/dev/null | tail -1 || true)"
-KEY_NAME="./$(ls *.id_rsa 2>/dev/null | tail -1 || true)"
+KERNEL="$SCRIPT_DIR/$(ls "$SCRIPT_DIR"/vmlinux-* 2>/dev/null | tail -1 | xargs basename)"
+ROOTFS="$SCRIPT_DIR/aws_baseimage.ext4"
+FUNCTION_DRIVE="$SCRIPT_DIR/function.ext4"   # built by stage 02
 
-for f in "$KERNEL" "$ROOTFS" "$KEY_NAME" "$FUNCTION_FILE" "./$RUNTIME_SCRIPT"; do
+for f in "$KERNEL" "$ROOTFS" "$FUNCTION_FILE"; do
     [[ -f "$f" ]] || { error "Required file not found: $f"; exit 1; }
 done
 
 log "Kernel  : $KERNEL"
 log "Rootfs  : $ROOTFS"
-log "SSH key : $KEY_NAME"
 log "Function: $FUNCTION_FILE"
+log "Invoke  : http://${GUEST_IP}:${LAMBDA_PORT}/2015-03-31/functions/function/invocations"
 
 # Export variables that stage scripts read from the environment
-export KERNEL ROOTFS KEY_NAME FUNCTION_FILE PAYLOAD TIMEOUT
+export KERNEL ROOTFS FUNCTION_FILE FUNCTION_DRIVE PAYLOAD TIMEOUT SCRIPT_DIR
 
-# run script stages in order
+# ── Stage runner ──────────────────────────────────────────────────────────────
 run_stage() {
     local script="$SCRIPT_DIR/stages/$1"
     [[ -x "$script" ]] || chmod +x "$script"
@@ -86,18 +86,21 @@ echo "** Firecracker Lambda Emulator **"
 echo
 
 run_stage 01_tap_setup.sh
-run_stage 02_configure_vm.sh
-run_stage 03_start_vm.sh
-run_stage 04_guest_network.sh
-run_stage 05_deploy_function.sh
+run_stage 02_build_function_drive.sh
+run_stage 03_configure_vm.sh
+run_stage 04_initialize_vm.sh
+run_stage 05_wait_for_rie.sh
 run_stage 06_invoke.sh
 
 # ── Shutdown ──────────────────────────────────────────────────────────────────
 if $KEEP_ALIVE; then
-    warn "VM left running (--keep-alive). SSH: ssh -i $KEY_NAME root@$GUEST_IP"
-    warn "Kill Firecracker with Ctrl-C in terminal 1 when you're done."
+    warn "VM left running (--keep-alive). Kill run_firecracker.sh with Ctrl-C in terminal 1 when done."
 else
-    log "Rebooting VM to trigger shutdown (reboot=k treats this as halt) …"
-    ssh_guest "reboot" 2>/dev/null || true
+    log "Sending reboot to halt VM..."
+    # reboot=k in kernel args means Firecracker exits cleanly on reboot syscall
+    curl -sf --unix-socket "$API_SOCKET" \
+        -X PUT "http://localhost/actions" \
+        -H "Content-Type: application/json" \
+        -d '{"action_type": "SendCtrlAltDel"}' 2>/dev/null || true
     success "Done. Firecracker in terminal 1 will exit on its own."
 fi

@@ -10,3 +10,4 @@ squashfs-root/
 *.pub
 *.env
 *.ext4
+test_*

@@ -92,6 +92,51 @@ else
   echo "Cleaning up extracted rootfs..."
   sudo rm -rf lambda-rootfs
 
+  # Inject bootstrap wrapper into rootfs (single mount operation)
+  echo "Injecting bootstrap wrapper into rootfs..."
+  MOUNT_DIR="$(mktemp -d)"
+  sudo mount -o loop aws_baseimage.ext4 "$MOUNT_DIR"
+
+  # Ensure /var/task exists as a mount point
+  sudo mkdir -p "$MOUNT_DIR/var/task"
+
+  # Move the real bootstrap aside
+  sudo mv "$MOUNT_DIR/var/runtime/bootstrap" "$MOUNT_DIR/var/runtime/bootstrap.real"
+  sudo sed -i 's|RUNTIME_ENTRYPOINT=/var/runtime/bootstrap|RUNTIME_ENTRYPOINT=/var/runtime/bootstrap.real|' \
+    "$MOUNT_DIR/lambda-entrypoint.sh"
+  # Write wrapper: mounts pseudo-fs, sets env, mounts function drive, starts RIE
+  sudo tee "$MOUNT_DIR/var/runtime/bootstrap" > /dev/null << 'WRAPPER'
+#!/bin/bash
+
+# ── Pseudo-filesystems (no init system to do this) ──
+/usr/bin/mount -t proc     proc     /proc 2>/dev/null
+/usr/bin/mount -t sysfs    sysfs    /sys  2>/dev/null
+/usr/bin/mount -t devtmpfs devtmpfs /dev  2>/dev/null
+
+# ── Environment (normally set by Docker ENV) ──
+export LANG=en_US.UTF-8
+export TZ=:/etc/localtime
+export PATH=/var/lang/bin:/usr/local/bin:/usr/bin:/bin:/opt/bin
+export LD_LIBRARY_PATH=/var/lang/lib:/lib64:/usr/lib64:/var/runtime:/var/runtime/lib:/var/task:/var/task/lib:/opt/lib
+export LAMBDA_TASK_ROOT=/var/task
+export LAMBDA_RUNTIME_DIR=/var/runtime
+
+# ── Mount function drive ──
+mkdir -p /var/task
+/usr/bin/mount /dev/vdb /var/task 2>/dev/null || echo "Warning: could not mount /dev/vdb"
+
+# ── Parse handler from kernel cmdline ──
+HANDLER=$(grep -oP 'handler=\K\S+' /proc/cmdline || echo "function.handler")
+
+# ── Hand off to Lambda entrypoint ──
+exec /lambda-entrypoint.sh "$HANDLER"
+WRAPPER
+  sudo chmod +x "$MOUNT_DIR/var/runtime/bootstrap"
+
+  sudo umount "$MOUNT_DIR"
+  rmdir "$MOUNT_DIR"
+  echo "Bootstrap wrapper injected."
+
   echo "Done: aws_baseimage.ext4"
 fi
 
