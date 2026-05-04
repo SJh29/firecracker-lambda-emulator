@@ -10,5 +10,3 @@ squashfs-root/
 *.pub
 *.env
 *.ext4
-firecracker
-jailer
