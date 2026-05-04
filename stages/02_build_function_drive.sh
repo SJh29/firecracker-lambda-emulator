@@ -17,15 +17,17 @@ log "Stage 2: Building function drive"
 
 FUNCTION_DRIVE="${SCRIPT_DIR}/function.ext4"
 FUNCTION_STAGING="${SCRIPT_DIR}/function-staging"
-
+INSPECTOR_PATH="${SCRIPT_DIR}/Inspector.py"
 # Clean up any previous staging dir or drive
 rm -rf "$FUNCTION_STAGING"
 rm -f  "$FUNCTION_DRIVE"
 
 # Build staging directory matching Lambda's expected task layout
 mkdir -p "$FUNCTION_STAGING/var/task"
-cp "$FUNCTION_FILE" "$FUNCTION_STAGING/var/task/function.py"
+cp "$FUNCTION_FILE" "$FUNCTION_STAGING/function.py"
+cp "$INSPECTOR_PATH" "$FUNCTION_STAGING/Inspector.py"
 log "Staged function: $FUNCTION_FILE → /var/task/function.py"
+log "Staged inspector: $INSPECTOR_PATH → /var/task/Inspector.py"
 
 # Create a small ext4 image (32M is plenty for a function file)
 truncate -s 32M "$FUNCTION_DRIVE"

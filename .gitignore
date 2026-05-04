@@ -11,3 +11,4 @@ squashfs-root/
 *.env
 *.ext4
 test_*
+aws_image_dockerfile/
