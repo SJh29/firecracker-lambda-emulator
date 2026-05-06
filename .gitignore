@@ -12,3 +12,4 @@ squashfs-root/
 *.ext4
 test_*
 aws_image_dockerfile/
+test_function_drive.sh
