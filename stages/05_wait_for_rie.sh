@@ -12,20 +12,19 @@
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/../common.sh"
 
-RIE_PING="http://${GUEST_IP}:${LAMBDA_PORT}/2018-06-01/ping"
+# In 05_wait_for_rie.sh, change the health check to hit the invoke endpoint
+RIE_URL="http://${GUEST_IP}:${LAMBDA_PORT}/2015-03-31/functions/function/invocations"
 
-log "Stage 5: Waiting for Lambda RIE at ${RIE_PING}"
+log "Stage 5: Waiting for Lambda RIE at ${GUEST_IP}:${LAMBDA_PORT}"
 
 attempts=0
 max=60
 
-until curl -sf --max-time 1 "$RIE_PING" &>/dev/null; do
+until curl -sf --max-time 1 -X POST "$RIE_URL" -d '{}' &>/dev/null; do
     sleep 1
     (( attempts++ ))
     if (( attempts >= max )); then
         error "Lambda RIE never became ready after ${max}s"
-        error "Check Firecracker logs: $LOGFILE"
-        error "Hint: ensure the guest mounts /dev/vdb at /var/task before bootstrap runs"
         exit 1
     fi
     log "Waiting for RIE... ($attempts/${max})"

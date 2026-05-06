@@ -91,7 +91,10 @@ else
   echo "Injecting bootstrap wrapper into rootfs..."
   MOUNT_DIR="$(mktemp -d)"
   sudo mount -o loop aws_baseimage.ext4 "$MOUNT_DIR"
-
+  # Mount doesn't exist on AWS Linux; need it to mount task dir
+  wget -O /tmp/busybox https://busybox.net/downloads/binaries/1.35.0-x86_64-linux-musl/busybox
+  sudo cp /tmp/busybox "$MOUNT_DIR/usr/bin/busybox"
+  sudo chmod +x "$MOUNT_DIR/usr/bin/busybox"
   # Ensure /var/task exists as a mount point
   sudo mkdir -p "$MOUNT_DIR/var/task"
 
@@ -103,10 +106,13 @@ else
   sudo tee "$MOUNT_DIR/var/runtime/bootstrap" > /dev/null << 'WRAPPER'
 #!/bin/bash
 
-# ── Pseudo-filesystems (no init system to do this) ──
-/usr/bin/mount -t proc     proc     /proc 2>/dev/null
-/usr/bin/mount -t sysfs    sysfs    /sys  2>/dev/null
-/usr/bin/mount -t devtmpfs devtmpfs /dev  2>/dev/null
+# ── Pseudo-filesystems ──
+# /proc must come first (needed for /proc/cmdline)
+/usr/bin/busybox mount -t proc proc /proc
+/usr/bin/busybox mount -t sysfs sysfs /sys
+
+# devtmpfs may already be mounted by the kernel; remount to ensure /dev is populated
+/usr/bin/busybox mount -t devtmpfs devtmpfs /dev 2>/dev/null
 
 # ── Environment (normally set by Docker ENV) ──
 export LANG=en_US.UTF-8
@@ -118,10 +124,26 @@ export LAMBDA_RUNTIME_DIR=/var/runtime
 
 # ── Mount function drive ──
 mkdir -p /var/task
-/usr/bin/mount /dev/vdb /var/task 2>/dev/null || echo "Warning: could not mount /dev/vdb"
+/usr/bin/busybox mount /dev/vdb /var/task
+if [ $? -eq 0 ]; then
+    echo "Mounted /dev/vdb at /var/task"
+else
+    echo "ERROR: Failed to mount /dev/vdb at /var/task"
+    echo "Available block devices:"
+    ls -la /dev/vd* /dev/sd* /dev/xvd* 2>/dev/null
+fi
+
+# ── Configure guest network ──
+/usr/bin/busybox ip link set lo up
+/usr/bin/busybox ip addr add 172.16.0.2/30 dev eth0
+/usr/bin/busybox ip link set eth0 up
+/usr/bin/busybox ip route add default via 172.16.0.1 dev eth0
+echo "nameserver 8.8.8.8" > /etc/resolv.conf
+echo "Guest network configured: 172.16.0.2/30 via 172.16.0.1"
 
 # ── Parse handler from kernel cmdline ──
 HANDLER=$(grep -oP 'handler=\K\S+' /proc/cmdline || echo "function.handler")
+echo "Handler: $HANDLER"
 
 # ── Hand off to Lambda entrypoint ──
 exec /lambda-entrypoint.sh "$HANDLER"
