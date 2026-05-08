@@ -7,9 +7,7 @@
 # drive; the guest init is expected to mount it at /var/task before the RIE
 # bootstrap runs.
 
-set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/../common.sh"
-source "$(dirname "${BASH_SOURCE[0]}")/../config.sh
 
 log "Stage 3: Configuring microVM via API socket"
 

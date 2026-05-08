@@ -13,6 +13,11 @@ GUEST_IP="172.16.0.2"
 LAMBDA_PORT=8080
 RUNTIME_SCRIPT="lambda_runtime.py"
 
+
+# kernel arguments for function config
+MEM_SIZE=128
+FUNC_TIMEOUT=30
+
 # helper functions for logging and API calls
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
 BLUE='\033[0;34m'; NC='\033[0m'

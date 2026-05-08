@@ -4,21 +4,21 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/config.sh"
 
 ARCH="$(uname -m)"
 
-latest_version=$(basename $(curl -fsSLI -o /dev/null -w  %{url_effective} ${release_url}/latest))
+LATEST_VERSION=$(basename $(curl -fsSLI -o /dev/null -w  %{url_effective} ${RELEASE_URL}/latest))
 
-CI_VERSION=${latest_version%.*}
+CI_VERSION=${LATEST_VERSION%.*}
 
 latest_kernel_key=$(curl "http://spec.ccfc.min.s3.amazonaws.com/?prefix=firecracker-ci/$CI_VERSION/$ARCH/vmlinux-&list-type=2" \
     | grep -oP "(?<=<Key>)(firecracker-ci/$CI_VERSION/$ARCH/vmlinux-[0-9]+\.[0-9]+\.[0-9]{1,3})(?=</Key>)" \
     | sort -V | tail -1)
 
-kernel_filename=$(basename $latest_kernel_key)
+KERNEL_FILENAME=$(basename $latest_kernel_key)
 
 # Download kernel if not already present
-if [[ -f "$kernel_filename" ]]; then
-  echo "Skipping kernel download, already exists: $kernel_filename"
+if [[ -f "$KERNEL_FILENAME" ]]; then
+  echo "Skipping kernel download, already exists: $KERNEL_FILENAME"
 else
-  echo "Downloading kernel: $kernel_filename"
+  echo "Downloading kernel: $KERNEL_FILENAME"
   # Download a linux kernel binary
   wget "https://s3.amazonaws.com/spec.ccfc.min/${latest_kernel_key}" 
 fi
@@ -164,15 +164,15 @@ fi
 
 # Firecracker Binary download + verification via SHA256
 
-ARCHIVE="firecracker-${latest_version}-${ARCH}.tgz"
+ARCHIVE="firecracker-${LATEST_VERSION}-${ARCH}.tgz"
 SHA256="${ARCHIVE}.sha256.txt"
-folder="release-${latest_version}-${ARCH}"
+folder="release-${LATEST_VERSION}-${ARCH}"
 
 # Verify required files exist
 if [[ ! -f "$ARCHIVE"  && ! -d "$folder" ]]; then
   echo "Error: Archive OR Folder not found: $ARCHIVE OR $folder" >&2
-  curl -L ${release_url}/download/${latest_version}/firecracker-${latest_version}-${ARCH}.tgz | tar -xz
-  curl -L ${release_url}/download/${latest_version}/firecracker-${latest_version}-${ARCH}.tgz.sha256.txt
+  curl -L ${RELEASE_URL}/download/${LATEST_VERSION}/firecracker-${LATEST_VERSION}-${ARCH}.tgz | tar -xz
+  curl -L ${RELEASE_URL}/download/${LATEST_VERSION}/firecracker-${LATEST_VERSION}-${ARCH}.tgz.sha256.txt
   
   if [[ ! -f "$SHA256" ]]; then
   echo "Error: SHA256 file not found: $SHA256" >&2
@@ -201,8 +201,8 @@ if [[ ! -f "$ARCHIVE"  && ! -d "$folder" ]]; then
 fi
  
 
-if [[ -d "release-${latest_version}-${ARCH}" ]]; then
-  echo "Skipping extraction, directory 'release-${latest_version}-${ARCH}' already exists."
+if [[ -d "release-${LATEST_VERSION}-${ARCH}" ]]; then
+  echo "Skipping extraction, directory 'release-${LATEST_VERSION}-${ARCH}' already exists."
 else
   # Extract archive
   echo "Extracting $ARCHIVE..."
@@ -219,11 +219,11 @@ e2fsck -fn $ROOTFS &>/dev/null && echo "Rootfs: $ROOTFS" || echo "ERROR: $ROOTFS
 
 # Verify Install
 
-FIRECRACKER="${folder}/firecracker-${latest_version}-${ARCH}"
-JAILER="${folder}/jailer-${latest_version}-${ARCH}"
+FIRECRACKER="${folder}/firecracker-${LATEST_VERSION}-${ARCH}"
+JAILER="${folder}/jailer-${LATEST_VERSION}-${ARCH}"
 
 if [[ -f "$FIRECRACKER" ]]; then
-  echo "Firecracker Found: '$latest_version'"
+  echo "Firecracker Found: '$LATEST_VERSION'"
 else
   echo "Error: Firecracker not found in '$folder'." >&2
   exit 1
@@ -241,7 +241,7 @@ fi
 if [[ -f "firecracker" ]]; then
   echo "Skipping firecracker binary rename, 'firecracker' already exists."
 else
-  mv release-${latest_version}-${ARCH}/firecracker-${latest_version}-${ARCH} firecracker
+  mv release-${LATEST_VERSION}-${ARCH}/firecracker-${LATEST_VERSION}-${ARCH} firecracker
   echo "firecracker binary renamed to 'firecracker'"
 
 fi
@@ -250,7 +250,7 @@ fi
 if [[ -f "jailer" ]]; then
   echo "Skipping jailer binary rename, 'jailer' already exists."
 else
-  mv release-${latest_version}-${ARCH}/jailer-${latest_version}-${ARCH} jailer
+  mv release-${LATEST_VERSION}-${ARCH}/jailer-${LATEST_VERSION}-${ARCH} jailer
   echo "jailer binary renamed to 'jailer'"
 fi
 
