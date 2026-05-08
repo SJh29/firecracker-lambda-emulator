@@ -9,6 +9,7 @@
 
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/../common.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/../config.sh
 
 log "Stage 3: Configuring microVM via API socket"
 
@@ -23,7 +24,7 @@ log "Logger configured → $LOGFILE"
 # console=ttyS0  — send kernel output to the serial console
 # reboot=k       — treat a reboot syscall as a full halt (Firecracker exits)
 # panic=1        — reboot (i.e. halt) 1 second after a kernel panic
-KERNEL_BOOT_ARGS="console=ttyS0 reboot=k panic=1 init=/var/runtime/bootstrap handler=function.handler"
+KERNEL_BOOT_ARGS="console=ttyS0 reboot=k panic=1 init=/var/runtime/bootstrap handler=function.handler func_mem_size=${MEM_SIZE} func_timeout=${FUNC_TIMEOUT}"
 
 # aarch64 needs keep_bootcon to preserve early boot messages on the console
 if [ "$(uname -m)" = "aarch64" ]; then

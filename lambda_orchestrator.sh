@@ -34,7 +34,7 @@ FUNCTION_FILE="./function.py"
 PAYLOAD='{"key": "value"}'
 PAYLOAD_FILE=""
 TIMEOUT=30
-KEEP_ALIVE=false
+KEEP_ALIVE=true
 
 # argument parsing
 while [[ $# -gt 0 ]]; do
@@ -98,9 +98,5 @@ if $KEEP_ALIVE; then
 else
     log "Sending reboot to halt VM..."
     # reboot=k in kernel args means Firecracker exits cleanly on reboot syscall
-    curl -sf --unix-socket "$API_SOCKET" \
-        -X PUT "http://localhost/actions" \
-        -H "Content-Type: application/json" \
-        -d '{"action_type": "SendCtrlAltDel"}' 2>/dev/null || true
-    success "Done. Firecracker in terminal 1 will exit on its own."
+    fc_api PUT /actions '{"action_type":"SendCtrlAltDel"}'
 fi

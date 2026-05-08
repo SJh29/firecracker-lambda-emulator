@@ -20,14 +20,14 @@ log "Stage 5: Waiting for Lambda RIE at ${GUEST_IP}:${LAMBDA_PORT}"
 attempts=0
 max=60
 
-until curl -sf --max-time 1 -X POST "$RIE_URL" -d '{}' &>/dev/null; do
-    sleep 1
-    (( attempts++ ))
-    if (( attempts >= max )); then
-        error "Lambda RIE never became ready after ${max}s"
-        exit 1
-    fi
-    log "Waiting for RIE... ($attempts/${max})"
-done
+#until curl -sf --max-time 1 -X POST "$RIE_URL" -d '{}' &>/dev/null; do
+#    sleep 1
+#    (( attempts++ ))
+#    if (( attempts >= max )); then
+#        error "Lambda RIE never became ready after ${max}s"
+#        exit 1
+#    fi
+#    log "Waiting for RIE... ($attempts/${max})"
+#done
 
-success "Stage 5 complete: Lambda RIE is ready"
+# success "Stage 5 complete: Lambda RIE is ready"

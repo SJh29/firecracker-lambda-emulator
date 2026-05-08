@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
+
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/config.sh"
+
 ARCH="$(uname -m)"
-release_url="https://github.com/firecracker-microvm/firecracker/releases"
 
 latest_version=$(basename $(curl -fsSLI -o /dev/null -w  %{url_effective} ${release_url}/latest))
 
@@ -11,7 +13,6 @@ latest_kernel_key=$(curl "http://spec.ccfc.min.s3.amazonaws.com/?prefix=firecrac
     | sort -V | tail -1)
 
 kernel_filename=$(basename $latest_kernel_key)
-ubuntu_version=$(basename $latest_ubuntu_key .squashfs | grep -oE '[0-9]+\.[0-9]+')
 
 # Download kernel if not already present
 if [[ -f "$kernel_filename" ]]; then
@@ -114,6 +115,9 @@ else
 # devtmpfs may already be mounted by the kernel; remount to ensure /dev is populated
 /usr/bin/busybox mount -t devtmpfs devtmpfs /dev 2>/dev/null
 
+# Initialize commandline values
+MEM_SIZE=$(grep -oP 'func_mem_size=\K\S+' /proc/cmdline || echo "128")
+TIMEOUT=$(grep -oP 'func_timeout=\K\S+' /proc/cmdline || echo "300")
 # ── Environment (normally set by Docker ENV) ──
 export LANG=en_US.UTF-8
 export TZ=:/etc/localtime
@@ -121,7 +125,8 @@ export PATH=/var/lang/bin:/usr/local/bin:/usr/bin:/bin:/opt/bin
 export LD_LIBRARY_PATH=/var/lang/lib:/lib64:/usr/lib64:/var/runtime:/var/runtime/lib:/var/task:/var/task/lib:/opt/lib
 export LAMBDA_TASK_ROOT=/var/task
 export LAMBDA_RUNTIME_DIR=/var/runtime
-
+export AWS_LAMBDA_FUNCTION_TIMEOUT=$TIMEOUT
+export AWS_LAMBDA_FUNCTION_MEMORY_SIZE=$MEM_SIZE
 # ── Mount function drive ──
 mkdir -p /var/task
 /usr/bin/busybox mount /dev/vdb /var/task
