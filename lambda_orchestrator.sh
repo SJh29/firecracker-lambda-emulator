@@ -51,12 +51,6 @@ done
 
 [[ -n "$PAYLOAD_FILE" ]] && PAYLOAD="$(cat "$PAYLOAD_FILE")"
 
-# ── Preflight checks ──────────────────────────────────────────────────────────
-[[ -S "$API_SOCKET" ]] || {
-    error "Firecracker API socket not found at $API_SOCKET"
-    error "Run ./run_firecracker.sh in another terminal first."
-    exit 1
-}
 
 KERNEL="$SCRIPT_DIR/$(ls "$SCRIPT_DIR"/vmlinux-* 2>/dev/null | tail -1 | xargs basename)"
 ROOTFS="$SCRIPT_DIR/aws_baseimage.ext4"
@@ -80,17 +74,23 @@ run_stage() {
     [[ -x "$script" ]] || chmod +x "$script"
     bash "$script"
 }
+check_status() {
+    while [[ ! -S "$API_SOCKET" ]]; do
+        error "Firecracker API socket not found at $API_SOCKET"
+        error "Run ./run_firecracker.sh in another terminal first."
+        read -p "Press enter to continue"
+    done
+}
 
 echo
 echo "** Firecracker Lambda Emulator **"
 echo
 
-run_stage 01_tap_setup.sh
-run_stage 02_build_function_drive.sh
-run_stage 03_configure_vm.sh
-run_stage 04_initialize_vm.sh
-run_stage 05_wait_for_rie.sh
-run_stage 06_invoke.sh
+run_stage 01_build_function_drive.sh
+check_status
+sleep 2
+run_stage 02_initialize_vm.sh
+run_stage 03_invoke.sh
 
 # ── Shutdown ──────────────────────────────────────────────────────────────────
 if $KEEP_ALIVE; then

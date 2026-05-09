@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 
-# stages/02_build_function_drive.sh — Stage 2: Build function ext4 drive
+# stages/02_build_function_drive.sh — Stage 1: Build function ext4 drive
 #
 # Creates a small ext4 image containing the user's function.py at the path
 # the Lambda RIE expects: /var/task/function.py
 #
-# The drive is mounted read-only by the guest at /var/task, which is the
+# The drive is mounted by the guest at /var/task, which is the
 # standard Lambda task root. The RIE will import handler from function.py.
 #
 # FUNCTION_FILE must be set in the environment (done by lambda_orchestrator.sh).
