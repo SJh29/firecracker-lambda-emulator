@@ -15,12 +15,13 @@ INVOKE_URL="http://${GUEST_IP}:${LAMBDA_PORT}/2015-03-31/functions/function/invo
 FUNCTION_FILE="./function.py"
 PAYLOAD='{"name": "Sparsh"}'
 PAYLOAD_FILE=""
-TIMEOUT=30
+TIMEOUT=300
 KEEP_ALIVE=false
 
 log "Stage 6: Invoking Lambda function"
 log "Endpoint : $INVOKE_URL"
 log "Payload  : $PAYLOAD"
+sleep 2;
 
 RESPONSE=$(curl -sf \
     --max-time "$TIMEOUT" \

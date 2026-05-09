@@ -89,6 +89,15 @@ export LAMBDA_TASK_ROOT=/var/task
 export LAMBDA_RUNTIME_DIR=/var/runtime
 export AWS_LAMBDA_FUNCTION_TIMEOUT=$TIMEOUT
 export AWS_LAMBDA_FUNCTION_MEMORY_SIZE=$MEM_SIZE
+export CONFIG_VIRT_CPU_ACCOUNTING_GEN=y
+cat /boot/config-$(uname -r) | grep -E "VIRT_CPU_ACCOUNTING|NO_HZ|IRQ_TIME" > kernelconfig
+cat /sys/devices/system/clocksource/clocksource0/current_clocksource >> kernelconfig
+cat /sys/devices/system/clocksource/clocksource0/available_clocksource >> kernelconfig
+cat /proc/cmdline >> kernelconfig
+cat /proc/uptime >> before_time
+sleep 2;
+cat /proc/uptime >> after_time
+lscpu >> cpuinfo.lscpu
 # ── Mount function drive ──
 mkdir -p /var/task
 /usr/bin/busybox mount /dev/vdb /var/task

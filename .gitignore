@@ -15,3 +15,6 @@ aws_image_dockerfile/
 test_function_drive.sh
 *.log
 *.log
+*.sha256.txt
+*.zip
+*.tgz

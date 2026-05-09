@@ -16,4 +16,4 @@ echo "[firecracker] Leave this terminal open. Ctrl-C to stop."
 echo
 
 # Run firecracker (blocks)
-sudo ./firecracker --api-sock "${API_SOCKET}" --enable-pci
+sudo ./firecracker --api-sock "${API_SOCKET}" --enable-pci --config-file ./vm_config.json
