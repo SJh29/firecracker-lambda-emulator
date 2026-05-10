@@ -7,17 +7,16 @@
 #
 # The drive is mounted by the guest at /var/task, which is the
 # standard Lambda task root. The RIE will import handler from function.py.
-#
-# FUNCTION_FILE must be set in the environment (done by lambda_orchestrator.sh).
 
-set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/../common.sh"
 
-log "Stage 2: Building function drive"
+log "Building function drive"
 
+FUNCTION_FILE="${SCRIPT_DIR}/function.py"
 FUNCTION_DRIVE="${SCRIPT_DIR}/function.ext4"
 FUNCTION_STAGING="${SCRIPT_DIR}/function-staging"
 INSPECTOR_PATH="${SCRIPT_DIR}/Inspector.py"
+
 # Clean up any previous staging dir or drive
 rm -rf "$FUNCTION_STAGING"
 rm -f  "$FUNCTION_DRIVE"
@@ -36,8 +35,5 @@ mkfs.ext4 -d "$FUNCTION_STAGING" -F "$FUNCTION_DRIVE" &>/dev/null
 # Clean up staging dir
 rm -rf "$FUNCTION_STAGING"
 
-# Export for use by stage 03
-export FUNCTION_DRIVE
-
 log "Function drive: $FUNCTION_DRIVE"
-success "Stage 2 complete: function drive ready"
+success "Function drive ready"

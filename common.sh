@@ -13,15 +13,7 @@ GUEST_IP="172.16.0.2"
 LAMBDA_PORT=8080
 RUNTIME_SCRIPT="lambda_runtime.py"
 
-
-# kernel arguments for function config
-MEM_SIZE=128
-FUNC_TIMEOUT=30
-# console=ttyS0  — send kernel output to the serial console
-# reboot=k       — treat a reboot syscall as a full halt (Firecracker exits)
-# panic=1        — reboot (i.e. halt) 1 second after a kernel panic
-KERNEL_BOOT_ARGS="console=ttyS0 reboot=k panic=1 init=/var/runtime/bootstrap handler=function.handler func_mem_size=${MEM_SIZE} func_timeout=${FUNC_TIMEOUT} nohz=off"
-
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # helper functions for logging and API calls
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
 BLUE='\033[0;34m'; NC='\033[0m'

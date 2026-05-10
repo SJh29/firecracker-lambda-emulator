@@ -90,14 +90,7 @@ export LAMBDA_RUNTIME_DIR=/var/runtime
 export AWS_LAMBDA_FUNCTION_TIMEOUT=$TIMEOUT
 export AWS_LAMBDA_FUNCTION_MEMORY_SIZE=$MEM_SIZE
 export CONFIG_VIRT_CPU_ACCOUNTING_GEN=y
-cat /boot/config-$(uname -r) | grep -E "VIRT_CPU_ACCOUNTING|NO_HZ|IRQ_TIME" > kernelconfig
-cat /sys/devices/system/clocksource/clocksource0/current_clocksource >> kernelconfig
-cat /sys/devices/system/clocksource/clocksource0/available_clocksource >> kernelconfig
-cat /proc/cmdline >> kernelconfig
-cat /proc/uptime >> before_time
-sleep 2;
-cat /proc/uptime >> after_time
-lscpu >> cpuinfo.lscpu
+export CONFIG_IRQ_TIME_ACCOUNTING=y
 # ── Mount function drive ──
 mkdir -p /var/task
 /usr/bin/busybox mount /dev/vdb /var/task
@@ -137,48 +130,50 @@ fi
 ARCHIVE="firecracker-${LATEST_VERSION}-${ARCH}.tgz"
 SHA256="${ARCHIVE}.sha256.txt"
 folder="release-${LATEST_VERSION}-${ARCH}"
+if [[ ! -f "firecracker" ]]; then
+  if [[ ! -f "$ARCHIVE" ]]; then
+    echo "Error: Firecracker archive not found: $ARCHIVE" >&2
+    echo "Did part 1 run successfully?" >&2
+    exit 1
+  fi
 
-if [[ ! -f "$ARCHIVE" ]]; then
-  echo "Error: Firecracker archive not found: $ARCHIVE" >&2
-  echo "Did part 1 run successfully?" >&2
-  exit 1
-fi
+  if [[ ! -f "$SHA256" ]]; then
+    echo "Error: SHA256 file not found: $SHA256" >&2
+    exit 1
+  fi
 
-if [[ ! -f "$SHA256" ]]; then
-  echo "Error: SHA256 file not found: $SHA256" >&2
-  exit 1
-fi
+  # Verify SHA256 checksum
+  echo "Verifying SHA256 checksum..."
+  if command -v sha256sum &>/dev/null; then
+    EXPECTED="$(awk '{print $1}' "$SHA256")"
+    ACTUAL="$(sha256sum "$ARCHIVE" | awk '{print $1}')"
+  elif command -v shasum &>/dev/null; then
+    EXPECTED="$(awk '{print $1}' "$SHA256")"
+    ACTUAL="$(shasum -a 256 "$ARCHIVE" | awk '{print $1}')"
+  else
+    echo "Error: No SHA256 utility found (sha256sum or shasum required)." >&2
+    exit 1
+  fi
 
-# Verify SHA256 checksum
-echo "Verifying SHA256 checksum..."
-if command -v sha256sum &>/dev/null; then
-  EXPECTED="$(awk '{print $1}' "$SHA256")"
-  ACTUAL="$(sha256sum "$ARCHIVE" | awk '{print $1}')"
-elif command -v shasum &>/dev/null; then
-  EXPECTED="$(awk '{print $1}' "$SHA256")"
-  ACTUAL="$(shasum -a 256 "$ARCHIVE" | awk '{print $1}')"
+  if [[ "$ACTUAL" != "$EXPECTED" ]]; then
+    echo "Error: SHA256 mismatch!" >&2
+    echo "  Expected: $EXPECTED" >&2
+    echo "  Actual:   $ACTUAL" >&2
+    exit 1
+  fi
+  echo "SHA256 verified successfully."
+
+  # Extract archive
+  if [[ -d "$folder" ]]; then
+    echo "Skipping extraction, directory '$folder' already exists."
+  else
+    echo "Extracting $ARCHIVE..."
+    tar -xzf "$ARCHIVE"
+    echo "Done."
+  fi
 else
-  echo "Error: No SHA256 utility found (sha256sum or shasum required)." >&2
-  exit 1
+  echo "Firecracker binary found, skipping..."
 fi
-
-if [[ "$ACTUAL" != "$EXPECTED" ]]; then
-  echo "Error: SHA256 mismatch!" >&2
-  echo "  Expected: $EXPECTED" >&2
-  echo "  Actual:   $ACTUAL" >&2
-  exit 1
-fi
-echo "SHA256 verified successfully."
-
-# Extract archive
-if [[ -d "$folder" ]]; then
-  echo "Skipping extraction, directory '$folder' already exists."
-else
-  echo "Extracting $ARCHIVE..."
-  tar -xzf "$ARCHIVE"
-  echo "Done."
-fi
-
 # ─── Rename binaries to bare 'firecracker' and 'jailer' ──────────────────────
 if [[ -f "firecracker" ]]; then
   echo "Skipping firecracker binary rename, 'firecracker' already exists."
