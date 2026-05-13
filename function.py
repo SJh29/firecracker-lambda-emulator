@@ -44,8 +44,7 @@ def handler(request, context):
     burn_memory()
     for _ in range(1_000_000): os.getpid()
     inspector.addAttribute("proc_after", get_procstat())
-    with open('testIO', 'w') as f:
-        f.write(get_procstat()*10000)
+
     if ('name' in request):
         inspector.addAttribute("message", "Hello " + str(request['name']) + "!")
     else:
