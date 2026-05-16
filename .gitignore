@@ -18,3 +18,5 @@ test_function_drive.sh
 *.sha256.txt
 *.zip
 *.tgz
+*.csv
+*.png
