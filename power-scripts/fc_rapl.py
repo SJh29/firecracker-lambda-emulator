@@ -11,11 +11,12 @@ Usage: sudo fc_rapl.py [--socket PATH] [--interval SECS] [--duration SECS] [--ou
    default duration: 60 s
 """
 
-import argparse, csv, sys, time
+import argparse, csv, os, platform, sys, time
 from datetime import datetime, timezone
 from pathlib import Path
 
 RAPL = Path("/sys/class/powercap")
+ARCH = platform.machine()
 
 def domains():
     d = {}
@@ -50,8 +51,10 @@ def main():
 
     doms = domains()
     if not doms:
+        if ARCH in ("aarch64", "arm64"):
+            sys.exit(f"ERROR: no RAPL on ARM ({ARCH}). Use fc_arm_power.py instead.")
         sys.exit("ERROR: no RAPL domains found at /sys/class/powercap "
-                 "(non-Intel/AMD or missing permissions)")
+                 "(missing permissions, or RAPL not supported on this CPU)")
     print(f"[rapl] socket={args.socket}  domains: {', '.join(doms)}")
     print(f"[rapl] {args.interval}s × {args.duration}s → {args.out}")
 
