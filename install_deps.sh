@@ -35,6 +35,7 @@ APT_PKGS=(
     linux-tools-common
     linux-tools-generic
     python3-matplotlib
+    python3-numpya
 )
 
 echo "Updating package lists..."
