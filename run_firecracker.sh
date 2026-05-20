@@ -1,19 +1,21 @@
-#!/usr/bin/env bash
-# =============================================================================
-# run_firecracker.sh — Terminal 1
-#
-# Starts the Firecracker binary bound to an API socket. 
-# Requires a separate terminal to run.
-# =============================================================================
+#!/bin/bash
+# run_firecracker.sh — must be run with sudo (Firecracker needs root for /dev/kvm)
+set -e
 
-API_SOCKET="/tmp/firecracker.socket"
+# Resolve project root from the script's own location. Works under sudo because
+# it doesn't rely on $HOME or $USER — only on where this script physically lives.
+HERE="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 
-# Remove stale API socket from a previous run
-sudo rm -f "$API_SOCKET"
+SOCKET="${SOCKET:-/tmp/firecracker.socket}"
 
-echo "[firecracker] Starting on socket $API_SOCKET"
-echo "[firecracker] Leave this terminal open. Ctrl-C to stop."
-echo
+# Clean any stale socket (Firecracker refuses to start if it already exists)
+sudo rm -f "$SOCKET"
 
-# Run firecracker (blocks)
-sudo ./firecracker --api-sock "${API_SOCKET}" --enable-pci --config-file ./vm_config.json
+# Generate the runtime config with absolute paths derived from HERE
+sed "s|@ROOT@|$HERE|g" "$HERE/vm_config.template.json" > "$HERE/vm_config.json"
+
+exec "$HERE/firecracker" \
+    --api-sock "$SOCKET" \
+    --config-file "$HERE/vm_config.json"
+
+#sudo $DIR/firecracker --api-sock "${API_SOCKET}" --enable-pci --config-file $DIR/vm_config.json

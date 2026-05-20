@@ -20,3 +20,5 @@ test_function_drive.sh
 *.tgz
 *.csv
 *.png
+run*/
+test*
