@@ -1,9 +1,9 @@
 #!/bin/bash
-# fc_ml_features.sh — perf events curated for power modeling.
+# fc_ml_metrics.sh — perf events curated for power modeling.
 # Captures cycles, instructions, cache, memory, branch — outputs wide CSV
 # with one row per interval (suitable for ML ingestion).
 #
-# Usage: sudo fc_ml_features.sh [SOCKET] [INTERVAL_MS] [DURATION_SECS] [OUT_CSV]
+# Usage: sudo fc_ml_metrics.sh [SOCKET] [INTERVAL_MS] [DURATION_SECS] [OUT_CSV]
 #   defaults: /tmp/firecracker.socket  1000  60  ml_features_<ts>.csv
 
 set -e

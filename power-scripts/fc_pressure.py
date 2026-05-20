@@ -13,17 +13,22 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 def find_pid(socket_path):
+    here = Path(__file__).resolve().parent
+    fc_pid_sh = here / "fc_pid.sh"
+    if fc_pid_sh.exists():
+        try:
+            out = subprocess.check_output(
+                ["bash", str(fc_pid_sh), socket_path],
+                stderr=subprocess.DEVNULL, timeout=10).decode().strip()
+            if out and out.split("\n")[0].isdigit():
+                return int(out.split("\n")[0])
+        except Exception:
+            pass
     if shutil.which("lsof"):
         try:
             out = subprocess.check_output(["lsof","-t","-U",socket_path],
                                           stderr=subprocess.DEVNULL, timeout=3).decode()
             if out.strip(): return int(out.split()[0])
-        except: pass
-    for d in Path("/proc").iterdir():
-        if not d.name.isdigit(): continue
-        try:
-            for fd in (d/"fd").iterdir():
-                if socket_path in str(fd.resolve()): return int(d.name)
         except: pass
     return None
 

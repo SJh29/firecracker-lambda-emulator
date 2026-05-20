@@ -21,6 +21,8 @@
 #   -l LAUNCH_SCRIPT    run_firecracker.sh path  (default: ./run_firecracker.sh)
 #   -I INVOKE_SCRIPT    invoke.sh path  (default: ../function-scripts/invoke.sh)
 #   -d DELAY            Seconds between invocations  (default: 2)
+#   -E EST_SECS         Estimated seconds per invocation; sizes how long the
+#                       collectors run so they outlast the experiment (default: 10)
 #   -o OUTDIR           Output dir  (default: experiment_<ts>)
 #   -t TERMINAL         gnome-terminal | konsole | xterm | tmux | screen | bg
 #                       default: auto
@@ -28,17 +30,23 @@
 
 set -e
 
+# Resolve script location and project root up front so defaults don't
+# depend on the current working directory.
+DIR="$(cd "$(dirname "$0")" && pwd)"   # power-scripts/
+ROOT="$(cd "$DIR/.." && pwd)"          # project root
+
 # ── defaults ─────────────────────────────────────────────
 COUNT=10
 SOCKET=/tmp/firecracker.socket
-LAUNCH=../run_firecracker.sh
-INVOKE=../function-scripts/invoke.sh
+LAUNCH="$ROOT/run_firecracker.sh"
+INVOKE="$ROOT/function_scripts/invoke.sh"
 DELAY=2
 OUTDIR=""
 TERM_KIND=auto
 CAPTURE=1
+EST_INVOKE_SECS=10   # estimated seconds per invocation; sizes collector duration
 
-while getopts "n:s:l:I:d:o:t:qh" opt; do
+while getopts "n:s:l:I:d:o:t:E:qh" opt; do
     case $opt in
         n) COUNT=$OPTARG ;;
         s) SOCKET=$OPTARG ;;
@@ -47,18 +55,19 @@ while getopts "n:s:l:I:d:o:t:qh" opt; do
         d) DELAY=$OPTARG ;;
         o) OUTDIR=$OPTARG ;;
         t) TERM_KIND=$OPTARG ;;
+        E) EST_INVOKE_SECS=$OPTARG ;;
         q) CAPTURE=0 ;;
-        h) sed -n 's/^# \?//p' "$0" | head -n 30; exit 0 ;;
+        h) sed -n 's/^# \?//p' "$0" | head -n 32; exit 0 ;;
     esac
 done
 
 OUTDIR=${OUTDIR:-experiment_$(date -u +%Y%m%d_%H%M%S)}
 mkdir -p "$OUTDIR"
+OUTDIR="$(cd "$OUTDIR" && pwd)"   # absolute path so collectors (esp. perf --output) resolve it correctly
 [[ $CAPTURE -eq 1 ]] && mkdir -p "$OUTDIR/invocations"
-DIR="$(cd "$(dirname "$0")" && pwd)"
 
-[[ -x "$LAUNCH" ]] || { echo "ERROR: $LAUNCH is not executable" >&2; exit 1; }
-[[ -x "$INVOKE" ]] || { echo "ERROR: $INVOKE is not executable" >&2; exit 1; }
+[[ -f "$LAUNCH" ]] || { echo "ERROR: launch script not found: $LAUNCH" >&2; exit 1; }
+[[ -f "$INVOKE" ]] || { echo "ERROR: invoke script not found: $INVOKE" >&2; exit 1; }
 
 echo "═══════════════════════════════════════════════════════════"
 echo "  fc_experiment"
@@ -102,14 +111,33 @@ for i in $(seq 1 30); do
     [[ -S "$SOCKET" ]] && break
     sleep 0.5
 done
-[[ -S "$SOCKET" ]] || { echo "ERROR: socket never appeared"; exit 1; }
-FC_PID=$("$DIR/fc_pid.sh" "$SOCKET")
+if [[ ! -S "$SOCKET" ]]; then
+    echo "ERROR: socket never appeared at $SOCKET after 15s." >&2
+    echo "  Check that run_firecracker.sh actually starts Firecracker on this socket." >&2
+    echo "  Firecracker log tail:" >&2
+    tail -20 "$FC_LOG" 2>/dev/null | sed 's/^/    /' >&2
+    exit 1
+fi
+# Brief settle, then confirm Firecracker is actually alive
+sleep 1
+FC_PID=$(sudo bash "$DIR/fc_pid.sh" "$SOCKET" 2>/dev/null || true)
+if [[ -z "$FC_PID" ]]; then
+    echo "ERROR: socket exists but no firecracker process owns it." >&2
+    echo "  Firecracker may have crashed after creating the socket. Log tail:" >&2
+    tail -20 "$FC_LOG" 2>/dev/null | sed 's/^/    /' >&2
+    exit 1
+fi
 echo "      Firecracker PID: $FC_PID"
 echo
 
 # ── 3. Start collectors ──────────────────────────────────
 echo "[3/6] Starting collectors at 1 Hz..."
-TOTAL_DURATION=$(( COUNT * DELAY + 30 ))
+# Collectors must outlast the whole experiment. Each iteration costs
+# roughly EST_INVOKE_SECS (the invocation) + DELAY (the gap). Add a margin
+# for the 3s pre/post baseline sleeps plus startup overhead.
+PER_ITER=$(echo "$EST_INVOKE_SECS + $DELAY" | bc -l)
+TOTAL_DURATION=$(printf '%.0f' "$(echo "$COUNT * $PER_ITER + 30" | bc -l)")
+echo "      est. per-invocation: ${EST_INVOKE_SECS}s, collectors run for ${TOTAL_DURATION}s"
 COLLECTORS=()
 start() {
     local name=$1; shift
@@ -119,25 +147,25 @@ start() {
 }
 
 ARCH=$(uname -m)
-start proc  sudo "$DIR/fc_proc.py"  --socket "$SOCKET" -i 1 -d "$TOTAL_DURATION" -o "$OUTDIR/proc.csv"
+start proc  sudo python3 "$DIR/fc_proc.py"  --socket "$SOCKET" -i 1 -d "$TOTAL_DURATION" -o "$OUTDIR/proc.csv"
 command -v pidstat &>/dev/null && \
-    start pidstat sudo "$DIR/fc_pidstat.sh" "$SOCKET" 1 "$TOTAL_DURATION" "$OUTDIR/pidstat.csv"
+    start pidstat sudo bash "$DIR/fc_pidstat.sh" "$SOCKET" 1 "$TOTAL_DURATION" "$OUTDIR/pidstat.csv"
 command -v perf &>/dev/null && \
-    start perf sudo "$DIR/fc_perf.sh" "$SOCKET" 1000 "$TOTAL_DURATION" "$OUTDIR/perf.csv"
+    start perf sudo bash "$DIR/fc_perf.sh" "$SOCKET" 1000 "$TOTAL_DURATION" "$OUTDIR/perf.csv"
 command -v perf &>/dev/null && \
-    start ml_features sudo "$DIR/fc_ml_features.sh" "$SOCKET" 1000 "$TOTAL_DURATION" "$OUTDIR/ml_features.csv"
-start pressure sudo "$DIR/fc_pressure.py" --socket "$SOCKET" -i 1 -d "$TOTAL_DURATION" -o "$OUTDIR/pressure.csv"
+    start ml_features sudo bash "$DIR/fc_ml_metrics.sh" "$SOCKET" 1000 "$TOTAL_DURATION" "$OUTDIR/ml_features.csv"
+start pressure sudo python3 "$DIR/fc_pressure.py" --socket "$SOCKET" -i 1 -d "$TOTAL_DURATION" -o "$OUTDIR/pressure.csv"
 
 if [[ "$ARCH" == "x86_64" || "$ARCH" == "amd64" ]]; then
     [[ -d /sys/class/powercap ]] && ls /sys/class/powercap/ 2>/dev/null | grep -q intel-rapl && \
-        start rapl sudo "$DIR/fc_rapl.py" --socket "$SOCKET" -i 1 -d "$TOTAL_DURATION" -o "$OUTDIR/rapl.csv"
+        start rapl sudo python3 "$DIR/fc_rapl.py" --socket "$SOCKET" -i 1 -d "$TOTAL_DURATION" -o "$OUTDIR/rapl.csv"
 fi
 if [[ "$ARCH" == "aarch64" || "$ARCH" == "arm64" ]]; then
     ls /sys/class/hwmon/hwmon*/*_input &>/dev/null && \
-        start arm_power sudo "$DIR/fc_arm_power.py" --socket "$SOCKET" -i 1 -d "$TOTAL_DURATION" -o "$OUTDIR/arm_power.csv"
+        start arm_power sudo python3 "$DIR/fc_arm_power.py" --socket "$SOCKET" -i 1 -d "$TOTAL_DURATION" -o "$OUTDIR/arm_power.csv"
 fi
 ls /sys/class/power_supply/BAT* &>/dev/null && \
-    start battery sudo "$DIR/fc_battery.py" --socket "$SOCKET" -i 1 -d "$TOTAL_DURATION" -o "$OUTDIR/battery.csv"
+    start battery sudo python3 "$DIR/fc_battery.py" --socket "$SOCKET" -i 1 -d "$TOTAL_DURATION" -o "$OUTDIR/battery.csv"
 
 echo
 sleep 3  # baseline samples before first invocation

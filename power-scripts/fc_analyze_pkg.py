@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
 """
-fc_analyze.py — produce the feasibility-deck graphs from one or more
-experiment directories created by fc_experiment.sh.
+fc_analyze_pkg.py — PACKAGE-POWER variant of fc_analyze.py.
+
+Identical to fc_analyze.py except it uses the RAPL 'package' domain as the
+power target instead of 'core'. Kept for side-by-side comparison of the two
+power signals. All other logic (wall-clock invocation alignment, perf feature
+pivoting, the graph set) is the same.
 
 Usage:
-  python3 fc_analyze.py EXP_DIR [EXP_DIR ...] [--out PLOTS_DIR]
+  python3 fc_analyze_pkg.py EXP_DIR [EXP_DIR ...] [--out PLOTS_DIR]
 
-  Single run:  python3 fc_analyze.py experiment_20260514_120000
-  Repeat runs: python3 fc_analyze.py run1 run2 run3
-  Workloads:   python3 fc_analyze.py cpu_bound mem_bound io_bound --labels cpu mem io
+  Single run:  python3 fc_analyze_pkg.py run6 --out plots_pkg
+  Compare:     python3 fc_analyze.py     run6 --out plots_core
+               python3 fc_analyze_pkg.py run6 --out plots_pkg
 
 Generates PNGs in --out (default: ./plots/) for the feasibility-study
 graphs:
@@ -171,12 +175,12 @@ def load_perf_wide(exp_dir):
 
 def power_col(rapl_rows):
     """
-    Pick the power column that best reflects VM *compute* power.
+    PACKAGE-POWER VARIANT. Picks the 'package' domain as the power target.
 
-    On Intel RAPL the 'core' (a.k.a. pp0) domain tracks core compute directly
-    (~0.1W idle → several W under load). The 'package' domain is dominated by
-    package C-state residency and can look anti-correlated with compute, so we
-    prefer 'core' when present and fall back to package, then any *_watts.
+    This is the original behaviour, kept for comparison against the core-power
+    analysis. On Intel RAPL the 'package' domain includes uncore + core and is
+    dominated by package C-state residency; the 'core' (pp0) domain tracks core
+    compute more directly. Use fc_analyze.py for the core-power view.
     """
     if not rapl_rows:
         return None
@@ -184,13 +188,13 @@ def power_col(rapl_rows):
     watt_cols = [c for c in cols if c.endswith("_watts")]
     if not watt_cols:
         return None
-    # 1. prefer a 'core' domain
-    for c in watt_cols:
-        if "core" in c.lower():
-            return c
-    # 2. then package
+    # 1. prefer a 'package' domain
     for c in watt_cols:
         if "package" in c.lower():
+            return c
+    # 2. then core
+    for c in watt_cols:
+        if "core" in c.lower():
             return c
     # 3. otherwise first available
     return watt_cols[0]
