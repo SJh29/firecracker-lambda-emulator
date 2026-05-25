@@ -22,3 +22,4 @@ test_function_drive.sh
 *.png
 run*/
 test*
+plots*/
