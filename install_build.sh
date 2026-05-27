@@ -189,5 +189,17 @@ else
   echo "jailer binary renamed to 'jailer'"
 fi
 
+
 echo
 echo "Build stage complete."
+
+# ─── Host networking and function drive ──────────────────────────────────────
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+echo
+echo "Setting up host TAP interface and NAT..."
+"${SCRIPT_DIR}/function_scripts/setup_tap.sh"
+
+echo
+echo "Building function drive..."
+"${SCRIPT_DIR}/function_scripts/build_function.sh"

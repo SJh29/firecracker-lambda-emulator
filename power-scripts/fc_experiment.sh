@@ -159,6 +159,11 @@ start pressure sudo python3 "$DIR/fc_pressure.py" --socket "$SOCKET" -i 1 -d "$T
 if [[ "$ARCH" == "x86_64" || "$ARCH" == "amd64" ]]; then
     [[ -d /sys/class/powercap ]] && ls /sys/class/powercap/ 2>/dev/null | grep -q intel-rapl && \
         start rapl sudo python3 "$DIR/fc_rapl.py" --socket "$SOCKET" -i 1 -d "$TOTAL_DURATION" -o "$OUTDIR/rapl.csv"
+    # turbostat reads power from MSRs, so it works on hosts where RAPL sysfs is
+    # absent (e.g. EC2 .metal). The analyzers fall back to turbostat.csv when
+    # rapl.csv is missing.
+    command -v turbostat &>/dev/null && \
+        start turbostat sudo bash "$DIR/fc_turbostat.sh" "$SOCKET" 1 "$TOTAL_DURATION" "$OUTDIR/turbostat.csv"
 fi
 if [[ "$ARCH" == "aarch64" || "$ARCH" == "arm64" ]]; then
     ls /sys/class/hwmon/hwmon*/*_input &>/dev/null && \

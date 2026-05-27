@@ -5,7 +5,7 @@
 
 source "$(dirname "${BASH_SOURCE[0]}")/../common.sh"
 
-log "Stage 1: TAP setup"
+log "TAP setup"
 
 # requirements check
 if ! command -v jq &>/dev/null; then
@@ -34,4 +34,4 @@ sudo iptables -t nat -D POSTROUTING -o "$HOST_IFACE" -j MASQUERADE 2>/dev/null |
 sudo iptables -t nat -A POSTROUTING -o "$HOST_IFACE" -j MASQUERADE
 log "NAT masquerade enabled on $HOST_IFACE"
 
-success "Stage 1 complete: TAP and NAT ready"
+success "TAP and NAT ready"

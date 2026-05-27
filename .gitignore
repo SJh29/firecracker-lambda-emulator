@@ -23,3 +23,5 @@ test_function_drive.sh
 run*/
 test*
 plots*/
+exp*/
+__pycache__/

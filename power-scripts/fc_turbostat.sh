@@ -6,6 +6,8 @@
 #   defaults: /tmp/firecracker.socket  1  60  turbostat_<ts>.csv
 
 set -e
+set -o pipefail   # so a turbostat failure isn't masked by the converter exiting 0
+DIR="$(cd "$(dirname "$0")" && pwd)"
 SOCKET="${1:-/tmp/firecracker.socket}"
 INTERVAL="${2:-1}"
 DURATION="${3:-60}"
@@ -27,14 +29,17 @@ ITERS=$(( DURATION / INTERVAL ))
 ERR=/tmp/turbo_err_$$
 trap "rm -f $ERR" EXIT
 
+# Stream turbostat's summary table through the normalizer so $OUT lands in the
+# same schema fc_rapl.py emits (timestamp,elapsed_s,*_watts). turbostat flushes
+# each interval, so the converter records real per-row wall-clock timestamps.
 run_turbo () {
     local cols="$1"; shift
     sudo turbostat "$@" \
         --quiet --Summary \
         --show "$cols" \
         --interval "$INTERVAL" \
-        --num_iterations "$ITERS" \
-        --out "$OUT" 2>"$ERR"
+        --num_iterations "$ITERS" 2>"$ERR" \
+        | python3 "$DIR/fc_turbostat_to_csv.py" "$OUT" "$INTERVAL"
 }
 
 echo "[turbostat] Sampling every ${INTERVAL}s for ${DURATION}s → $OUT"

@@ -51,6 +51,15 @@ def load_csv(path):
     with open(path) as f:
         return list(csv.DictReader(f))
 
+def load_power(exp_dir):
+    """Power-source rows in the rapl.csv schema (timestamp, elapsed_s, *_watts).
+    Prefer RAPL; fall back to turbostat.csv (normalized to the same schema by
+    fc_turbostat_to_csv.py) on hosts without RAPL sysfs, e.g. EC2 .metal."""
+    rows = load_csv(exp_dir / "rapl.csv")
+    if rows:
+        return rows
+    return load_csv(exp_dir / "turbostat.csv")
+
 def num(v):
     try: return float(v)
     except: return None
@@ -85,7 +94,7 @@ def rapl_clock_origin(exp_dir):
     RAPL rows have both an absolute 'timestamp' and a relative 'elapsed_s';
     origin_epoch = timestamp_epoch - elapsed_s for any row.
     """
-    rows = load_csv(exp_dir / "rapl.csv")
+    rows = load_power(exp_dir)
     for r in rows:
         ep = parse_iso(r.get("timestamp"))
         el = num(r.get("elapsed_s"))
@@ -222,7 +231,7 @@ def integrate_per_window(xs, ys, windows):
 
 def plot_timeline(exp_dir, out_dir):
     """Graph 1: power timeline with invocation bands."""
-    rapl = load_csv(exp_dir / "rapl.csv")
+    rapl = load_power(exp_dir)
     if not rapl:
         print("  skip 01: no rapl.csv"); return
     pkg = power_col(rapl)
@@ -254,7 +263,7 @@ def plot_timeline(exp_dir, out_dir):
 
 def plot_idle_vs_active(exp_dir, out_dir):
     """Graph 2: idle vs active distribution."""
-    rapl = load_csv(exp_dir / "rapl.csv")
+    rapl = load_power(exp_dir)
     if not rapl: return
     pkg = power_col(rapl)
     if not pkg: return
@@ -285,7 +294,7 @@ def plot_repeatability(exp_dirs, out_dir):
     datasets = []
     labels = []
     for d in exp_dirs:
-        rapl = load_csv(d / "rapl.csv")
+        rapl = load_power(d)
         if not rapl: continue
         pkg = power_col(rapl)
         if not pkg: continue
@@ -315,7 +324,7 @@ def plot_repeatability(exp_dirs, out_dir):
 
 def plot_energy_distribution(exp_dir, out_dir):
     """Graph 4: per-invocation energy histogram."""
-    rapl = load_csv(exp_dir / "rapl.csv")
+    rapl = load_power(exp_dir)
     if not rapl: return
     pkg = power_col(rapl)
     if not pkg: return
@@ -343,7 +352,7 @@ def plot_energy_distribution(exp_dir, out_dir):
 
 def plot_cpu_vs_power(exp_dir, out_dir):
     """Graph 5: cpu% vs power scatter, with linear fit."""
-    rapl = load_csv(exp_dir / "rapl.csv")
+    rapl = load_power(exp_dir)
     proc = load_csv(exp_dir / "proc.csv")
     if not rapl or not proc: return
     pkg = power_col(rapl)
@@ -375,7 +384,7 @@ def plot_cpu_vs_power(exp_dir, out_dir):
 
 def plot_baseline_residuals(exp_dir, out_dir, fit=None):
     """Graph 6: residuals of linear cpu% baseline over time."""
-    rapl = load_csv(exp_dir / "rapl.csv")
+    rapl = load_power(exp_dir)
     proc = load_csv(exp_dir / "proc.csv")
     if not rapl or not proc: return
     pkg = power_col(rapl)
@@ -412,7 +421,7 @@ def plot_baseline_residuals(exp_dir, out_dir, fit=None):
 
 def plot_correlation(exp_dir, out_dir):
     """Graph 7: correlation heatmap of features vs power."""
-    rapl = load_csv(exp_dir / "rapl.csv")
+    rapl = load_power(exp_dir)
     if not rapl: return
     pkg = power_col(rapl)
     if not pkg: return
@@ -503,7 +512,7 @@ def plot_pmu_scatter(exp_dir, out_dir, feature):
     """Graph 8: strongest PMU feature vs power."""
     if not feature:
         print("  skip 08: no strong feature found"); return
-    rapl = load_csv(exp_dir / "rapl.csv")
+    rapl = load_power(exp_dir)
     if not rapl: return
     pkg = power_col(rapl)
     if not pkg: return
@@ -539,7 +548,7 @@ def plot_pmu_scatter(exp_dir, out_dir, feature):
 
 def plot_rapl_stack(exp_dir, out_dir):
     """Graph 9: stacked RAPL domains."""
-    rapl = load_csv(exp_dir / "rapl.csv")
+    rapl = load_power(exp_dir)
     if not rapl: return
     watt_cols = [c for c in rapl[0] if c.endswith("_watts")]
     if len(watt_cols) < 2:
@@ -567,7 +576,7 @@ def plot_workload_comparison(exp_dirs, labels, out_dir):
     if len(exp_dirs) < 2: return
     datasets = []; lbls = []
     for d, lbl in zip(exp_dirs, labels or [d.name for d in exp_dirs]):
-        rapl = load_csv(d / "rapl.csv")
+        rapl = load_power(d)
         if not rapl: continue
         pkg = power_col(rapl)
         if not pkg: continue
