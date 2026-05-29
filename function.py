@@ -27,7 +27,7 @@ def handler(request, context):
             result = ''.join(f.readlines())
         return result
     
-    def burn_cpu(iterations=15_000_000):
+    def burn_cpu(iterations=7_000_000):
         x = b"seed"
         for _ in range(iterations):
             x = hashlib.sha256(x).digest()

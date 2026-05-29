@@ -58,6 +58,17 @@ else
   fail=1
 fi
 
+# ─── cgroup v2 prerequisites for per-instance CPU quota ──────────────────────
+FS_TYPE="$(stat -fc %T /sys/fs/cgroup 2>/dev/null || echo unknown)"
+if [[ "$FS_TYPE" == "cgroup2fs" ]] \
+   && grep -qw cpu /sys/fs/cgroup/cgroup.controllers 2>/dev/null \
+   && grep -qw cpu /sys/fs/cgroup/cgroup.subtree_control 2>/dev/null; then
+  echo "cgroup v2 + cpu controller ready (run_firecracker.sh will set cpu.max per instance)"
+else
+  echo "ERROR: cgroup v2 cpu controller not ready. Run ./install_cgroup.sh." >&2
+  fail=1
+fi
+
 echo
 if [[ $fail -eq 0 ]]; then
   echo "Firecracker installation verified"

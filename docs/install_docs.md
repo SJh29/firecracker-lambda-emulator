@@ -1,6 +1,7 @@
 # Installation Scripts
 
-Run these four scripts in order on a fresh Ubuntu 22.04 host before launching any microVMs.
+Run these scripts in order on a fresh Ubuntu 22.04 host before launching any microVMs:
+`install_deps.sh` → `install_download.sh` → `install_build.sh` → `install_cgroup.sh` → `install_verify.sh`.
 
 ---
 
@@ -74,6 +75,20 @@ Builds the rootfs image from the downloaded Lambda base image layers and extract
 - Alternative rootfs may have these binaries present, but python3.10 AWS Baseimage used in this repository doesn't.
 ---
 
+## [install_cgroup.sh](../install_cgroup.sh)
+
+Verifies cgroup v2 prerequisites for per-instance CPU quota enforcement and enables the `cpu` controller in `cgroup.subtree_control` if it is not already on. Must be run between `install_build.sh` and `install_verify.sh`.
+
+| Check / action | Detail |
+|---|---|
+| `/sys/fs/cgroup` is `cgroup2fs` | Aborts if the host is on cgroup v1 |
+| `cpu` listed in `/sys/fs/cgroup/cgroup.controllers` | Host kernel exposes the cpu controller |
+| `cpu` listed in `/sys/fs/cgroup/cgroup.subtree_control` | Enables it via `echo +cpu` if not already set, so child cgroups can write `cpu.max` |
+
+The firecracker cgroup at `/sys/fs/cgroup/firecracker/` itself is created on demand by `run_firecracker.sh`, which derives `cpu.max` from `vm_config.json`'s `mem_size_mib` at the AWS Lambda ratio of **1 full vCPU per 1769 MB of guest memory**. When guest memory exceeds 1769 MB, `run_firecracker.sh` also raises `vcpu_count` to `ceil(mem_size_mib / 1769)` so the guest can use the additional host CPU time it has been granted.
+
+---
+
 ## [install_verify.sh](../install_verify.sh)
 
 Validates that all required artifacts are present and well-formed. Exits non-zero if any check fails.
@@ -84,3 +99,4 @@ Validates that all required artifacts are present and well-formed. Exits non-zer
 | Rootfs | A `*.ext4` file exists and passes `e2fsck -fn` |
 | Firecracker binary | `./firecracker` or `release-*/firecracker-*` exists |
 | Jailer binary | `./jailer` or `release-*/jailer-*` exists |
+| cgroup v2 + cpu controller | `/sys/fs/cgroup` is `cgroup2fs` and `cpu` is enabled in both `cgroup.controllers` and `cgroup.subtree_control` |
