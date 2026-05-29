@@ -23,6 +23,7 @@
 #   -d DELAY            Seconds between invocations  (default: 2)
 #   -E EST_SECS         Estimated seconds per invocation; sizes how long the
 #                       collectors run so they outlast the experiment (default: 10)
+#   -m MEM_MIB          Guest memory tier (MiB), passed through to run_firecracker.sh -m
 #   -o OUTDIR           Output dir  (default: experiment_<ts>)
 #   -t TERMINAL         gnome-terminal | konsole | xterm | tmux | screen | bg
 #                       default: auto
@@ -45,8 +46,9 @@ OUTDIR=""
 TERM_KIND=auto
 CAPTURE=1
 EST_INVOKE_SECS=10   # estimated seconds per invocation; sizes collector duration
+MEM_MIB=""           # if set, forwarded to run_firecracker.sh as `-m MEM_MIB`
 
-while getopts "n:s:l:I:d:o:t:E:qh" opt; do
+while getopts "n:s:l:I:d:o:t:E:m:qh" opt; do
     case $opt in
         n) COUNT=$OPTARG ;;
         s) SOCKET=$OPTARG ;;
@@ -56,10 +58,17 @@ while getopts "n:s:l:I:d:o:t:E:qh" opt; do
         o) OUTDIR=$OPTARG ;;
         t) TERM_KIND=$OPTARG ;;
         E) EST_INVOKE_SECS=$OPTARG ;;
+        m) MEM_MIB=$OPTARG ;;
         q) CAPTURE=0 ;;
-        h) sed -n 's/^# \?//p' "$0" | head -n 32; exit 0 ;;
+        h) sed -n 's/^# \?//p' "$0" | head -n 33; exit 0 ;;
     esac
 done
+
+# Args forwarded to the launch script. Currently only `-m`; this stays a single
+# string because all terminal backends below interpolate $LAUNCH_CMD into bash -c.
+LAUNCH_ARGS=""
+[[ -n "$MEM_MIB" ]] && LAUNCH_ARGS="-m $MEM_MIB"
+LAUNCH_CMD="$LAUNCH${LAUNCH_ARGS:+ $LAUNCH_ARGS}"
 
 OUTDIR=${OUTDIR:-experiment_$(date -u +%Y%m%d_%H%M%S)}
 mkdir -p "$OUTDIR"
@@ -72,10 +81,11 @@ OUTDIR="$(cd "$OUTDIR" && pwd)"   # absolute path so collectors (esp. perf --out
 echo "═══════════════════════════════════════════════════════════"
 echo "  fc_experiment"
 echo "═══════════════════════════════════════════════════════════"
-echo "  launch    : $LAUNCH"
+echo "  launch    : $LAUNCH_CMD"
 echo "  invoke    : $INVOKE"
 echo "  socket    : $SOCKET"
 echo "  count     : $COUNT × (${DELAY}s gap)"
+[[ -n "$MEM_MIB" ]] && echo "  mem       : ${MEM_MIB} MiB"
 echo "  capture   : $([[ $CAPTURE -eq 1 ]] && echo yes || echo no)"
 echo "  output    : $OUTDIR"
 echo "═══════════════════════════════════════════════════════════"
@@ -106,12 +116,12 @@ else
     echo "      terminal: $TERM_KIND"
 
     case "$TERM_KIND" in
-        gnome-terminal) gnome-terminal -- bash -c "$LAUNCH 2>&1 | tee $FC_LOG; exec bash" ;;
-        konsole)        konsole -e bash -c "$LAUNCH 2>&1 | tee $FC_LOG; exec bash" & ;;
-        xterm)          xterm -hold -e "bash -c '$LAUNCH 2>&1 | tee $FC_LOG'" & ;;
-        tmux)           tmux new-session -d -s fc_exp "$LAUNCH 2>&1 | tee $FC_LOG" ;;
-        screen)         screen -dmS fc_exp bash -c "$LAUNCH 2>&1 | tee $FC_LOG" ;;
-        bg)             nohup bash "$LAUNCH" >"$FC_LOG" 2>&1 &
+        gnome-terminal) gnome-terminal -- bash -c "$LAUNCH_CMD 2>&1 | tee $FC_LOG; exec bash" ;;
+        konsole)        konsole -e bash -c "$LAUNCH_CMD 2>&1 | tee $FC_LOG; exec bash" & ;;
+        xterm)          xterm -hold -e "bash -c '$LAUNCH_CMD 2>&1 | tee $FC_LOG'" & ;;
+        tmux)           tmux new-session -d -s fc_exp "$LAUNCH_CMD 2>&1 | tee $FC_LOG" ;;
+        screen)         screen -dmS fc_exp bash -c "$LAUNCH_CMD 2>&1 | tee $FC_LOG" ;;
+        bg)             nohup bash "$LAUNCH" $LAUNCH_ARGS >"$FC_LOG" 2>&1 &
                         echo "$!" > "$OUTDIR/firecracker.pid" ;;
         *)              echo "ERROR: unknown terminal $TERM_KIND"; exit 1 ;;
     esac

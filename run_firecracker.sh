@@ -1,10 +1,22 @@
 #!/bin/bash
 # run_firecracker.sh — must be run with sudo (Firecracker needs root for /dev/kvm)
+#
+# Usage: sudo ./run_firecracker.sh [-m MEM_MIB]
+#   -m MEM_MIB   Override guest memory (MiB). Also updates func_mem_size in
+#                boot_args so the guest init agrees with machine-config.
 set -e
 
 # Resolve project root from the script's own location. Works under sudo because
 # it doesn't rely on $HOME or $USER — only on where this script physically lives.
 HERE="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+
+MEM_OVERRIDE=""
+while getopts "m:h" opt; do
+    case $opt in
+        m) MEM_OVERRIDE=$OPTARG ;;
+        h) sed -n 's/^# \?//p' "$0" | head -n 5; exit 0 ;;
+    esac
+done
 
 SOCKET="${SOCKET:-/tmp/firecracker.socket}"
 
@@ -13,6 +25,15 @@ sudo rm -f "$SOCKET"
 
 # Generate the runtime config with absolute paths derived from HERE
 sed "s|@ROOT@|$HERE|g" "$HERE/vm_config.template.json" > "$HERE/vm_config.json"
+
+# Apply -m override: bump mem_size_mib and the matching func_mem_size kernel arg.
+if [[ -n "$MEM_OVERRIDE" ]]; then
+    tmp="$HERE/vm_config.json.tmp"
+    jq --argjson m "$MEM_OVERRIDE" '
+        ."machine-config".mem_size_mib = $m
+        | ."boot-source".boot_args |= sub("func_mem_size=[0-9]+"; "func_mem_size=\($m)")
+    ' "$HERE/vm_config.json" > "$tmp" && mv "$tmp" "$HERE/vm_config.json"
+fi
 
 # ── Per-instance CPU quota via cgroup v2 ────────────────────────────────────
 # Allocate 1 full vCPU of host CPU time per 1769 MB of guest memory (AWS Lambda
