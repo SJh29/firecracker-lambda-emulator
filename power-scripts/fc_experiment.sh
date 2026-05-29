@@ -81,29 +81,42 @@ echo "  output    : $OUTDIR"
 echo "═══════════════════════════════════════════════════════════"
 echo
 
-# ── 1. Launch Firecracker ────────────────────────────────
-echo "[1/6] Launching Firecracker..."
-if [[ "$TERM_KIND" == "auto" ]]; then
-    if   command -v gnome-terminal &>/dev/null; then TERM_KIND=gnome-terminal
-    elif command -v konsole        &>/dev/null; then TERM_KIND=konsole
-    elif command -v xterm          &>/dev/null; then TERM_KIND=xterm
-    elif command -v tmux           &>/dev/null; then TERM_KIND=tmux
-    elif command -v screen         &>/dev/null; then TERM_KIND=screen
-    else TERM_KIND=bg; fi
-fi
-echo "      terminal: $TERM_KIND"
-
+# ── 1. Launch Firecracker (or reuse a running instance) ──
+echo "[1/6] Checking for an existing Firecracker on $SOCKET ..."
+FC_STARTED=0
 FC_LOG="$OUTDIR/firecracker.log"
-case "$TERM_KIND" in
-    gnome-terminal) gnome-terminal -- bash -c "$LAUNCH 2>&1 | tee $FC_LOG; exec bash" ;;
-    konsole)        konsole -e bash -c "$LAUNCH 2>&1 | tee $FC_LOG; exec bash" & ;;
-    xterm)          xterm -hold -e "bash -c '$LAUNCH 2>&1 | tee $FC_LOG'" & ;;
-    tmux)           tmux new-session -d -s fc_exp "$LAUNCH 2>&1 | tee $FC_LOG" ;;
-    screen)         screen -dmS fc_exp bash -c "$LAUNCH 2>&1 | tee $FC_LOG" ;;
-    bg)             nohup bash "$LAUNCH" >"$FC_LOG" 2>&1 &
-                    echo "$!" > "$OUTDIR/firecracker.pid" ;;
-    *)              echo "ERROR: unknown terminal $TERM_KIND"; exit 1 ;;
-esac
+EXISTING_FC_PID=""
+if [[ -S "$SOCKET" ]]; then
+    EXISTING_FC_PID=$(sudo bash "$DIR/fc_pid.sh" "$SOCKET" 2>/dev/null || true)
+fi
+
+if [[ -n "$EXISTING_FC_PID" ]]; then
+    echo "      reusing running Firecracker (pid $EXISTING_FC_PID) on $SOCKET"
+    echo "      skipping launch; collectors will attach via PID"
+else
+    echo "      no running Firecracker found — launching..."
+    if [[ "$TERM_KIND" == "auto" ]]; then
+        if   command -v gnome-terminal &>/dev/null; then TERM_KIND=gnome-terminal
+        elif command -v konsole        &>/dev/null; then TERM_KIND=konsole
+        elif command -v xterm          &>/dev/null; then TERM_KIND=xterm
+        elif command -v tmux           &>/dev/null; then TERM_KIND=tmux
+        elif command -v screen         &>/dev/null; then TERM_KIND=screen
+        else TERM_KIND=bg; fi
+    fi
+    echo "      terminal: $TERM_KIND"
+
+    case "$TERM_KIND" in
+        gnome-terminal) gnome-terminal -- bash -c "$LAUNCH 2>&1 | tee $FC_LOG; exec bash" ;;
+        konsole)        konsole -e bash -c "$LAUNCH 2>&1 | tee $FC_LOG; exec bash" & ;;
+        xterm)          xterm -hold -e "bash -c '$LAUNCH 2>&1 | tee $FC_LOG'" & ;;
+        tmux)           tmux new-session -d -s fc_exp "$LAUNCH 2>&1 | tee $FC_LOG" ;;
+        screen)         screen -dmS fc_exp bash -c "$LAUNCH 2>&1 | tee $FC_LOG" ;;
+        bg)             nohup bash "$LAUNCH" >"$FC_LOG" 2>&1 &
+                        echo "$!" > "$OUTDIR/firecracker.pid" ;;
+        *)              echo "ERROR: unknown terminal $TERM_KIND"; exit 1 ;;
+    esac
+    FC_STARTED=1
+fi
 
 # ── 2. Wait for socket ───────────────────────────────────
 echo "[2/6] Waiting for $SOCKET ..."
