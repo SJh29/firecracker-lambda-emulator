@@ -186,7 +186,7 @@ ls /sys/class/power_supply/BAT* &>/dev/null && \
     start battery sudo python3 "$DIR/fc_battery.py" --socket "$SOCKET" -i 1 -d "$TOTAL_DURATION" -o "$OUTDIR/battery.csv"
 
 echo
-sleep 3  # baseline samples before first invocation
+sleep 8  # baseline samples before first invocation
 
 # ── 4. Invocations ───────────────────────────────────────
 echo "[4/6] Running $COUNT invocations of $INVOKE ..."
