@@ -3,7 +3,7 @@
 #
 # 1. Launch run_firecracker.sh in a separate terminal
 # 2. Wait for the socket
-# 3. Start collectors at 1 Hz
+# 3. Start collectors at the configured sampling rate (default 100 Hz)
 # 4. Invoke ../function-scripts/invoke.sh N times
 # 5. Stop collectors
 # 6. Kill Firecracker
@@ -21,6 +21,10 @@
 #   -l LAUNCH_SCRIPT    run_firecracker.sh path  (default: ./run_firecracker.sh)
 #   -I INVOKE_SCRIPT    invoke.sh path  (default: ../function-scripts/invoke.sh)
 #   -d DELAY            Seconds between invocations  (default: 2)
+#   -r RATE_HZ          Collector sampling rate in Hz (default: 100). At 100 Hz
+#                       a 0.3s invocation gets ~30 samples. perf's floor is
+#                       10ms, so 100 Hz is the practical ceiling; pidstat and
+#                       turbostat stay at 1 Hz (integer-second tools).
 #   -E EST_SECS         Estimated seconds per invocation; sizes how long the
 #                       collectors run so they outlast the experiment (default: 10)
 #   -m MEM_MIB          Guest memory tier (MiB), passed through to run_firecracker.sh -m
@@ -47,22 +51,36 @@ TERM_KIND=auto
 CAPTURE=1
 EST_INVOKE_SECS=10   # estimated seconds per invocation; sizes collector duration
 MEM_MIB=""           # if set, forwarded to run_firecracker.sh as `-m MEM_MIB`
+RATE_HZ=100          # collector sampling rate; see -r. Sub-second invocations
+                     # need many samples per window — 1 Hz is far too coarse.
 
-while getopts "n:s:l:I:d:o:t:E:m:qh" opt; do
+while getopts "n:s:l:I:d:r:o:t:E:m:qh" opt; do
     case $opt in
         n) COUNT=$OPTARG ;;
         s) SOCKET=$OPTARG ;;
         l) LAUNCH=$OPTARG ;;
         I) INVOKE=$OPTARG ;;
         d) DELAY=$OPTARG ;;
+        r) RATE_HZ=$OPTARG ;;
         o) OUTDIR=$OPTARG ;;
         t) TERM_KIND=$OPTARG ;;
         E) EST_INVOKE_SECS=$OPTARG ;;
         m) MEM_MIB=$OPTARG ;;
         q) CAPTURE=0 ;;
-        h) sed -n 's/^# \?//p' "$0" | head -n 33; exit 0 ;;
+        h) sed -n 's/^# \?//p' "$0" | head -n 37; exit 0 ;;
     esac
 done
+
+# Derive per-collector interval arguments from the sampling rate.
+#   SEC_INT  — float seconds for the Python collectors (proc/pressure/rapl)
+#   MS_INT   — integer milliseconds for perf (-I); perf's floor is 10ms
+#   COARSE_INT — integer seconds for pidstat/turbostat/battery, which take
+#                whole-second intervals (their scripts do integer division on it)
+SEC_INT=$(echo "scale=6; 1/$RATE_HZ" | bc -l)
+MS_INT=$(printf '%.0f' "$(echo "1000/$RATE_HZ" | bc -l)")
+(( MS_INT < 10 )) && MS_INT=10            # perf rejects intervals below 10ms
+COARSE_INT=$(printf '%.0f' "$SEC_INT")
+(( COARSE_INT < 1 )) && COARSE_INT=1
 
 # Args forwarded to the launch script. Currently only `-m`; this stays a single
 # string because all terminal backends below interpolate $LAUNCH_CMD into bash -c.
@@ -154,7 +172,7 @@ echo "      Firecracker PID: $FC_PID"
 echo
 
 # ── 3. Start collectors ──────────────────────────────────
-echo "[3/6] Starting collectors at 1 Hz..."
+echo "[3/6] Starting collectors at ${RATE_HZ} Hz (proc/pressure/rapl/turbostat=${SEC_INT}s, perf=${MS_INT}ms, pidstat=${COARSE_INT}s)..."
 # Collectors must outlast the whole experiment. Each iteration costs
 # roughly EST_INVOKE_SECS (the invocation) + DELAY (the gap). Add a margin
 # for the 3s pre/post baseline sleeps plus startup overhead.
@@ -170,30 +188,34 @@ start() {
 }
 
 ARCH=$(uname -m)
-start proc  sudo python3 "$DIR/fc_proc.py"  --socket "$SOCKET" -i 1 -d "$TOTAL_DURATION" -o "$OUTDIR/proc.csv"
+start proc  sudo python3 "$DIR/fc_proc.py"  --socket "$SOCKET" -i "$SEC_INT" -d "$TOTAL_DURATION" -o "$OUTDIR/proc.csv"
+# pidstat takes whole-second intervals only, so it stays at COARSE_INT.
 command -v pidstat &>/dev/null && \
-    start pidstat sudo bash "$DIR/fc_pidstat.sh" "$SOCKET" 1 "$TOTAL_DURATION" "$OUTDIR/pidstat.csv"
+    start pidstat sudo bash "$DIR/fc_pidstat.sh" "$SOCKET" "$COARSE_INT" "$TOTAL_DURATION" "$OUTDIR/pidstat.csv"
 command -v perf &>/dev/null && \
-    start perf sudo bash "$DIR/fc_perf.sh" "$SOCKET" 1000 "$TOTAL_DURATION" "$OUTDIR/perf.csv"
+    start perf sudo bash "$DIR/fc_perf.sh" "$SOCKET" "$MS_INT" "$TOTAL_DURATION" "$OUTDIR/perf.csv"
 command -v perf &>/dev/null && \
-    start ml_features sudo bash "$DIR/fc_ml_metrics.sh" "$SOCKET" 1000 "$TOTAL_DURATION" "$OUTDIR/ml_features.csv"
-start pressure sudo python3 "$DIR/fc_pressure.py" --socket "$SOCKET" -i 1 -d "$TOTAL_DURATION" -o "$OUTDIR/pressure.csv"
+    start ml_features sudo bash "$DIR/fc_ml_metrics.sh" "$SOCKET" "$MS_INT" "$TOTAL_DURATION" "$OUTDIR/ml_features.csv"
+start pressure sudo python3 "$DIR/fc_pressure.py" --socket "$SOCKET" -i "$SEC_INT" -d "$TOTAL_DURATION" -o "$OUTDIR/pressure.csv"
 
 if [[ "$ARCH" == "x86_64" || "$ARCH" == "amd64" ]]; then
     [[ -d /sys/class/powercap ]] && ls /sys/class/powercap/ 2>/dev/null | grep -q intel-rapl && \
-        start rapl sudo python3 "$DIR/fc_rapl.py" --socket "$SOCKET" -i 1 -d "$TOTAL_DURATION" -o "$OUTDIR/rapl.csv"
+        start rapl sudo python3 "$DIR/fc_rapl.py" --socket "$SOCKET" -i "$SEC_INT" -d "$TOTAL_DURATION" -o "$OUTDIR/rapl.csv"
     # turbostat reads power from MSRs, so it works on hosts where RAPL sysfs is
     # absent (e.g. EC2 .metal). The analyzers fall back to turbostat.csv when
-    # rapl.csv is missing.
+    # rapl.csv is missing. It accepts fractional intervals, so it follows the
+    # configured rate (SEC_INT) like the other power collectors.
     command -v turbostat &>/dev/null && \
-        start turbostat sudo bash "$DIR/fc_turbostat.sh" "$SOCKET" 1 "$TOTAL_DURATION" "$OUTDIR/turbostat.csv"
+        start turbostat sudo bash "$DIR/fc_turbostat.sh" "$SOCKET" "$SEC_INT" "$TOTAL_DURATION" "$OUTDIR/turbostat.csv"
 fi
 if [[ "$ARCH" == "aarch64" || "$ARCH" == "arm64" ]]; then
     ls /sys/class/hwmon/hwmon*/*_input &>/dev/null && \
-        start arm_power sudo python3 "$DIR/fc_arm_power.py" --socket "$SOCKET" -i 1 -d "$TOTAL_DURATION" -o "$OUTDIR/arm_power.csv"
+        start arm_power sudo python3 "$DIR/fc_arm_power.py" --socket "$SOCKET" -i "$SEC_INT" -d "$TOTAL_DURATION" -o "$OUTDIR/arm_power.csv"
 fi
+# Battery gauges refresh on the order of seconds, so sub-second sampling adds
+# nothing — keep it at COARSE_INT.
 ls /sys/class/power_supply/BAT* &>/dev/null && \
-    start battery sudo python3 "$DIR/fc_battery.py" --socket "$SOCKET" -i 1 -d "$TOTAL_DURATION" -o "$OUTDIR/battery.csv"
+    start battery sudo python3 "$DIR/fc_battery.py" --socket "$SOCKET" -i "$COARSE_INT" -d "$TOTAL_DURATION" -o "$OUTDIR/battery.csv"
 
 echo
 sleep 8  # baseline samples before first invocation

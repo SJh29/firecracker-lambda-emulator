@@ -4,6 +4,7 @@
 #
 # Usage: sudo fc_turbostat.sh [SOCKET] [INTERVAL_SECS] [DURATION_SECS] [OUT_CSV]
 #   defaults: /tmp/firecracker.socket  1  60  turbostat_<ts>.csv
+#   INTERVAL_SECS may be fractional (e.g. 0.01 for 100 Hz sampling).
 
 set -e
 set -o pipefail   # so a turbostat failure isn't masked by the converter exiting 0
@@ -25,7 +26,11 @@ if ! command -v turbostat &>/dev/null; then
     exit 1
 fi
 
-ITERS=$(( DURATION / INTERVAL ))
+# turbostat's --interval accepts fractional seconds (e.g. 0.01 for 100 Hz), but
+# --num_iterations must be an integer. Compute it with float math and round up
+# so the run still covers the full DURATION; floor at 1 iteration.
+ITERS=$(awk -v d="$DURATION" -v i="$INTERVAL" \
+    'BEGIN { n = d / i; k = int(n); if (n > k) k++; if (k < 1) k = 1; print k }')
 ERR=/tmp/turbo_err_$$
 trap "rm -f $ERR" EXIT
 

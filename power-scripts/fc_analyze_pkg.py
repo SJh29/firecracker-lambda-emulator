@@ -211,14 +211,20 @@ def load_perf_wide(exp_dir):
     derive("branch_miss_rate", "branch-misses", "instructions")
     return out
 
+# Power domain to use as the analysis target. Defaults to 'package'; set to
+# 'core' via the --power-domain CLI flag. Read by power_col().
+POWER_DOMAIN = "package"
+
 def power_col(rapl_rows):
     """
-    PACKAGE-POWER VARIANT. Picks the 'package' domain as the power target.
+    Pick the RAPL watts column to use as the power target.
 
-    This is the original behaviour, kept for comparison against the core-power
-    analysis. On Intel RAPL the 'package' domain includes uncore + core and is
-    dominated by package C-state residency; the 'core' (pp0) domain tracks core
-    compute more directly. Use fc_analyze.py for the core-power view.
+    Defaults to the 'package' domain (POWER_DOMAIN == "package"). Pass
+    --power-domain core to prefer the 'core' (pp0) domain instead.
+
+    On Intel RAPL the 'package' domain includes uncore + core and is dominated
+    by package C-state residency; the 'core' (pp0) domain tracks core compute
+    more directly.
     """
     if not rapl_rows:
         return None
@@ -226,13 +232,17 @@ def power_col(rapl_rows):
     watt_cols = [c for c in cols if c.endswith("_watts")]
     if not watt_cols:
         return None
-    # 1. prefer a 'package' domain
+    # Preference order follows the selected domain, with the other domain as a
+    # fallback when the preferred one is not present in the CSV.
+    primary, secondary = (("core", "package") if POWER_DOMAIN == "core"
+                          else ("package", "core"))
+    # 1. prefer the selected domain
     for c in watt_cols:
-        if "package" in c.lower():
+        if primary in c.lower():
             return c
-    # 2. then core
+    # 2. then the other domain
     for c in watt_cols:
-        if "core" in c.lower():
+        if secondary in c.lower():
             return c
     # 3. otherwise first available
     return watt_cols[0]
@@ -329,8 +339,17 @@ def saaf_cpu_pcts(saaf_records):
 
 # ── window classification ───────────────────────────────────
 
-def split_active_idle(xs, ys, windows, pad=0.5):
-    """Bucket samples into 'active' (inside any window ± pad) or 'idle'."""
+def split_active_idle(xs, ys, windows, pad=None):
+    """Bucket samples into 'active' (inside any window ± pad) or 'idle'.
+
+    `pad` absorbs alignment slop between the invocation clock and the power
+    clock. When not given it defaults to ~2 sample intervals (the median
+    spacing of xs), so it self-tunes to the collector rate — roughly 20 ms at
+    100 Hz, 2 s at 1 Hz. A fixed pad would over-pad sub-second invocations at
+    high sampling rates and mislabel idle samples as active.
+    """
+    if pad is None:
+        pad = 2.0 * float(np.median(np.diff(xs))) if len(xs) >= 2 else 0.5
     active, idle = [], []
     for x, y in zip(xs, ys):
         is_active = any(s - pad <= x <= e + pad for s, e in windows)
@@ -355,7 +374,7 @@ def plot_timeline(exp_dir, out_dir):
         print("  skip 01: no rapl.csv"); return
     pkg = power_col(rapl)
     if not pkg:
-        print("  skip 01: no package power column"); return
+        print(f"  skip 01: no {POWER_DOMAIN} power column"); return
     xs, ys = colvals(rapl, pkg)
     windows = load_invocation_windows(exp_dir)
 
@@ -369,8 +388,14 @@ def plot_timeline(exp_dir, out_dir):
     if windows:
         _, idle_samples = split_active_idle(xs, ys, windows)
         idle_baseline = np.median(idle_samples) if len(idle_samples) else np.median(ys)
+    elif len(xs):
+        # No windows: estimate idle from the first few seconds of baseline
+        # samples (time-based, so it's independent of the collector rate — a
+        # fixed sample count like ys[:10] is only 0.1 s at 100 Hz).
+        base = ys[xs <= xs.min() + 5.0]
+        idle_baseline = np.median(base) if len(base) else np.median(ys)
     else:
-        idle_baseline = np.median(ys[:10]) if len(ys) > 10 else np.median(ys)
+        idle_baseline = np.median(ys) if len(ys) else 0.0
     ax.axhline(idle_baseline, linestyle="--", color="grey", linewidth=1,
                label=f"idle ~{idle_baseline:.2f}W")
     ax.set_xlabel("Elapsed (s)"); ax.set_ylabel("Power (W)")
@@ -477,7 +502,7 @@ def plot_cpu_vs_power(exp_dir, out_dir):
     pkg = power_col(rapl)
     if not pkg: return
 
-    # Align by elapsed_s (nearest neighbour, 1Hz both)
+    # Align cpu onto the power timestamps by interpolation (rate-independent)
     xs_p, ws = colvals(rapl, pkg)
     xs_c, cpu = colvals(proc, "cpu_pct")
     if len(xs_p) < 5 or len(xs_c) < 5: return
@@ -493,7 +518,7 @@ def plot_cpu_vs_power(exp_dir, out_dir):
     ax.plot(xx, np.polyval(fit, xx), color="red", linewidth=1.5,
             label=f"linear fit: W = {fit[0]:.3f}·cpu% + {fit[1]:.2f}\n"
                   f"r = {r:.3f}, R² = {r**2:.3f}")
-    ax.set_xlabel("CPU %"); ax.set_ylabel("Package power (W)")
+    ax.set_xlabel("CPU %"); ax.set_ylabel(f"{POWER_DOMAIN.capitalize()} power (W)")
     ax.set_title(f"CPU% vs power — {exp_dir.name}")
     ax.legend(loc="best"); ax.grid(True, alpha=0.3)
     fig.tight_layout()
@@ -658,7 +683,7 @@ def plot_pmu_scatter(exp_dir, out_dir, feature):
     xx = np.linspace(ys_aligned.min(), ys_aligned.max(), 50)
     ax.plot(xx, np.polyval(fit, xx), color="red", linewidth=1.5,
             label=f"r = {r:.3f}, R² = {r**2:.3f}")
-    ax.set_xlabel(feature); ax.set_ylabel("Package power (W)")
+    ax.set_xlabel(feature); ax.set_ylabel(f"{POWER_DOMAIN.capitalize()} power (W)")
     ax.set_title(f"{feature} vs power — {exp_dir.name}")
     ax.legend(loc="best"); ax.grid(True, alpha=0.3)
     fig.tight_layout()
@@ -734,14 +759,15 @@ def _run_stat(vals):
 
 def compute_cross_run_stats(exp_dirs):
     """
-    Aggregate per-run means for runtime, package power, and CPU utilisation,
+    Aggregate per-run means for runtime, RAPL power, and CPU utilisation,
     then compute cross-run mean / std / CV.
 
     Strategy per metric
     -------------------
     Runtime  : SAAF warm-start "runtime" (ms → s) → mean per run.
     CPU util : SAAF warm-start cpu-jiffies → cpu% → mean per run.
-    Power    : mean RAPL/turbostat package power during active windows per run.
+    Power    : mean RAPL/turbostat power (selected domain) during active
+               windows per run.
 
     Returns a dict keyed by metric name; each value is either None (< 2 valid
     runs) or a dict with keys: per_run_means, mean, std, cv, n_runs.
@@ -826,7 +852,7 @@ def print_stats_table(stats, exp_dirs):
 
     _row("Runtime",        stats.get("runtime"), "s")
     _row("CPU util",       stats.get("cpu"),     "%")
-    _row("Pkg Power",      stats.get("power"),   "W")
+    _row(f"{POWER_DOMAIN.capitalize()} Power", stats.get("power"), "W")
 
     print("└─────────────────────┴──────────────────┴────────────────┴───────────────┘")
     n = len(exp_dirs)
@@ -839,7 +865,7 @@ def print_stats_table(stats, exp_dirs):
     for metric, label, unit in [
         ("runtime", "Runtime (s)",   "s"),
         ("cpu",     "CPU util (%)", "%"),
-        ("power",   "Pkg Power (W)", "W"),
+        ("power",   f"{POWER_DOMAIN.capitalize()} Power (W)", "W"),
     ]:
         s = stats.get(metric)
         if s is None:
@@ -854,7 +880,7 @@ def plot_cross_run_stats(exp_dirs, stats, out_dir):
     metrics = []
     for key, label, unit in [("runtime", "Runtime (s)", "s"),
                               ("cpu",     "CPU util (%)", "%"),
-                              ("power",   "Pkg Power (W)", "W")]:
+                              ("power",   f"{POWER_DOMAIN.capitalize()} Power (W)", "W")]:
         if stats.get(key):
             metrics.append((label, stats[key], unit))
     if not metrics:
@@ -909,12 +935,19 @@ def main():
                     help="Output directory for PNGs")
     ap.add_argument("--labels", nargs="+", default=None,
                     help="Labels for graph 10 (one per dir, in order)")
+    ap.add_argument("--power-domain", choices=["package", "core"],
+                    default="package",
+                    help="RAPL domain to analyse (default: package)")
     args = ap.parse_args()
+
+    global POWER_DOMAIN
+    POWER_DOMAIN = args.power_domain
 
     args.out.mkdir(parents=True, exist_ok=True)
     primary = args.dirs[0]
     print(f"[fc_analyze] primary: {primary}")
     print(f"[fc_analyze] output:  {args.out}")
+    print(f"[fc_analyze] power domain: {POWER_DOMAIN}")
     print()
 
     # single-run graphs (use primary)
