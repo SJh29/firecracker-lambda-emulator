@@ -12,7 +12,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/../common.sh"
 INVOKE_URL="http://${GUEST_IP}:${LAMBDA_PORT}/2015-03-31/functions/function/invocations"
 
 
-PAYLOAD='{"name": "Sparsh"}'
+PAYLOAD='{"method": "chacha20", "rounds": 100000, "password": "benchmarkpass", "seed": 42}'
 TIMEOUT=300
 KEEP_ALIVE=false
 
