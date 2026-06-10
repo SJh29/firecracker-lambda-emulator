@@ -18,36 +18,54 @@ set -euo pipefail
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/config.sh"
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/build.env"
-# Build OpenSSL Static Binary
-if [[ -f "/tmp/openssl/apps/openssl" ]]; then
-  echo "Static OpenSSL binary already built at /tmp/openssl/apps/openssl, skipping..."
+# Build OpenSSL Static Binary at $OPENSSL_BIN (= $OPENSSL_SRC_DIR/apps/openssl).
+# All paths are absolute so the build never depends on (or pollutes) the cwd,
+# which must stay the repo root for the rootfs build below.
+if [[ -f "$OPENSSL_BIN" ]]; then
+  echo "Static OpenSSL binary already built at $OPENSSL_BIN, skipping..."
 else
   echo "Building static OpenSSL binary..."
-  cd /tmp
-  if [[ ! -f "openssl-3.5.7.tar.gz" ]]; then
-    curl -LO "$OPENSSL_URL"
+  if [[ ! -f "$OPENSSL_TARBALL" ]]; then
+    curl -L -o "$OPENSSL_TARBALL" "$OPENSSL_URL"
   else
-    echo "Source tarball already exists: openssl-3.5.7.tar.gz, skipping download..."
+    echo "Source tarball already exists: $OPENSSL_TARBALL, skipping download..."
   fi
-  if [[ ! -d "openssl-3.5.7" ]]; then
-    tar xzf openssl-3.5.7.tar.gz
+  # Extract the source tree directly into $OPENSSL_SRC_DIR (strip the top-level
+  # openssl-3.5.7/ component) so the build dir is exactly $OPENSSL_SRC_DIR.
+  if [[ ! -d "$OPENSSL_SRC_DIR" ]]; then
+    mkdir -p "$OPENSSL_SRC_DIR"
+    tar xzf "$OPENSSL_TARBALL" -C "$OPENSSL_SRC_DIR" --strip-components=1
   else
-    echo "Source directory already exists: openssl-3.5.7, skipping extraction..."
+    echo "Source directory already exists: $OPENSSL_SRC_DIR, skipping extraction..."
   fi
-  cd openssl-3.5.7
-  if [[ -f "apps/openssl" ]]; then
-    echo "Static OpenSSL binary already built at apps/openssl, skipping build..."
-  else
+  # Build in a subshell so the cd doesn't leak into the rest of the script.
+  (
+    cd "$OPENSSL_SRC_DIR"
     ./Configure no-shared no-dso -static linux-x86_64
-    make -j$(nproc)
-  fi
-  echo "Static OpenSSL binary built at: /tmp/openssl/apps/openssl"
+    make -j"$(nproc)"
+  )
+  echo "Static OpenSSL binary built at: $OPENSSL_BIN"
 fi
 # ─── Build AWS Lambda base image rootfs ──────────────────────────────────────
-if [[ -f "aws_baseimage.ext4" ]]; then
-  echo "Skipping rootfs build, already exists: aws_baseimage.ext4"
+if [[ -f "$ROOTFS_IMAGE" ]]; then
+  echo "Skipping rootfs build, already exists: $ROOTFS_IMAGE"
 else
   echo "Building AWS Lambda base image rootfs..."
+
+  # Build into a partial file and only promote it to $ROOTFS_IMAGE once the
+  # wrapper is fully injected. A failure mid-build (e.g. a missing file in the
+  # cp steps below) then leaves no $ROOTFS_IMAGE behind, so the next run rebuilds
+  # instead of silently booting a half-built, unbootable image.
+  IMG_PARTIAL="${ROOTFS_IMAGE}.partial"
+  MOUNT_DIR=""
+  cleanup_rootfs_build() {
+    [[ -n "$MOUNT_DIR" && -d "$MOUNT_DIR" ]] && {
+      sudo umount "$MOUNT_DIR" 2>/dev/null || true
+      sudo rmdir  "$MOUNT_DIR" 2>/dev/null || true
+    }
+    [[ -f "$IMG_PARTIAL" ]] && sudo rm -f "$IMG_PARTIAL"
+  }
+  trap cleanup_rootfs_build EXIT
 
   # Extract all tar.xz layers into staging directory
   if [[ ! -d "lambda-rootfs" ]]; then
@@ -60,13 +78,13 @@ else
 
   # Clean up cloned repo to free space before image creation
   echo "Cleaning up source files..."
-  rm -rf aws-lambda-base-images
+  sudo rm -rf aws-lambda-base-images
 
   # Create ext4 filesystem image
   echo "Creating ext4 image..."
   sudo chown -R root:root lambda-rootfs
-  truncate -s 1G aws_baseimage.ext4
-  sudo mkfs.ext4 -d lambda-rootfs -F aws_baseimage.ext4
+  sudo truncate -s 1G "$IMG_PARTIAL"
+  sudo mkfs.ext4 -d lambda-rootfs -F "$IMG_PARTIAL"
 
   # Clean up extracted rootfs
   echo "Cleaning up extracted rootfs..."
@@ -75,12 +93,12 @@ else
   # Inject bootstrap wrapper into rootfs (single mount operation)
   echo "Injecting bootstrap wrapper into rootfs..."
   MOUNT_DIR="$(mktemp -d)"
-  sudo mount -o loop aws_baseimage.ext4 "$MOUNT_DIR"
+  sudo mount -o loop "$IMG_PARTIAL" "$MOUNT_DIR"
 
   # Mount doesn't exist on AWS Linux; need it to mount task dir
   sudo cp /tmp/busybox "$MOUNT_DIR/usr/bin/busybox"
   sudo chmod +x "$MOUNT_DIR/usr/bin/busybox"
-  sudo cp /tmp/openssl/apps/openssl "$MOUNT_DIR/usr/bin/openssl"
+  sudo cp "$OPENSSL_BIN" "$MOUNT_DIR/usr/bin/openssl"
   sudo chmod +x "$MOUNT_DIR/usr/bin/openssl"
   # Ensure /var/task exists as a mount point
   sudo mkdir -p "$MOUNT_DIR/var/task"
@@ -143,12 +161,15 @@ echo "Handler: $HANDLER"
 exec /lambda-entrypoint.sh "$HANDLER"
 WRAPPER
   sudo chmod +x "$MOUNT_DIR/var/runtime/bootstrap"
-
   sudo umount "$MOUNT_DIR"
-  rmdir "$MOUNT_DIR"
+  sudo rmdir "$MOUNT_DIR"
+  MOUNT_DIR=""
   echo "Bootstrap wrapper injected."
 
-  echo "Done: aws_baseimage.ext4"
+  # Injection succeeded — promote the partial image and disarm the cleanup trap.
+  sudo mv "$IMG_PARTIAL" "$ROOTFS_IMAGE"
+  trap - EXIT
+  echo "Done: $ROOTFS_IMAGE"
 fi
 
 # ─── Verify and extract Firecracker archive ──────────────────────────────────

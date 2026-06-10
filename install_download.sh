@@ -22,14 +22,15 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/config.sh"
 
 ARCH="$(uname -m)"
 
-LATEST_VERSION=$(basename $(curl -fsSLI -o /dev/null -w  %{url_effective} ${RELEASE_URL}/latest))
+#LATEST_VERSION=$(basename $(curl -fsSLI -o /dev/null -w  %{url_effective} ${RELEASE_URL}/latest))
+# The bucket for v1.16 is not updated yet, so hardcoding the latest known version that has a matching kernel in the bucket
+LATEST_VERSION=v1.15.1
 CI_VERSION=${LATEST_VERSION%.*}
-
 # ─── Kernel ──────────────────────────────────────────────────────────────────
 latest_kernel_key=$(curl "${KERNEL_S3_BUCKET_URL}/?prefix=firecracker-ci/$CI_VERSION/$ARCH/vmlinux-&list-type=2" \
     | grep -oP "(?<=<Key>)(firecracker-ci/$CI_VERSION/$ARCH/vmlinux-[0-9]+\.[0-9]+\.[0-9]{1,3})(?=</Key>)" \
     | sort -V | tail -1)
-
+echo "Latest kernel key: $latest_kernel_key"
 KERNEL_FILENAME=$(basename $latest_kernel_key)
 
 if [[ -f "$KERNEL_FILENAME" ]]; then
@@ -88,11 +89,11 @@ else
   echo "Downloading busybox..."
   wget -O "$BUSYBOX_PATH" "$BUSYBOX_URL"
 fi
-if [[ -f "$OPENSSL_PATH" ]]; then
-  echo "Skipping OpenSSL download, $OPENSSL_PATH already exists."
+if [[ -f "$OPENSSL_TARBALL" ]]; then
+  echo "Skipping OpenSSL download, $OPENSSL_TARBALL already exists."
 else
-  echo "Downloading static OpenSSL binary..."
-  curl -LO "$OPENSSL_PATH" "$OPENSSL_URL"
+  echo "Downloading OpenSSL source tarball..."
+  curl -L -o "$OPENSSL_TARBALL" "$OPENSSL_URL"
 fi
 
 # ─── Firecracker release archive + checksum ──────────────────────────────────

@@ -21,7 +21,9 @@ BUSYBOX_PATH="/tmp/busybox"
 
 # ─── static OpenSSL binary ─────────────────────
 OPENSSL_URL="https://github.com/openssl/openssl/releases/download/openssl-3.5.7/openssl-3.5.7.tar.gz"
-OPENSSL_PATH="/tmp/openssl"
+OPENSSL_TARBALL="/tmp/openssl-3.5.7.tar.gz"   # source tarball download target
+OPENSSL_SRC_DIR="/tmp/openssl"                # source extracted + built here
+OPENSSL_BIN="/tmp/openssl/apps/openssl"       # resulting static binary
 # ─── Output filenames ────────────────────────────────────────────────────────
 # The final rootfs image produced by part 2 and verified by part 3.
 ROOTFS_IMAGE="aws_baseimage.ext4"
