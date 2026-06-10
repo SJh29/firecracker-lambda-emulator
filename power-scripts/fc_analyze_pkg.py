@@ -27,9 +27,38 @@ graphs:
   08_ipc_vs_power.png          — strongest PMU feature scatter (graph 8)
   09_rapl_domains_stack.png    — package + dram + core stacked area (graph 9)
   10_workload_comparison.png   — across labelled experiments (graph 10)
+  11_cross_run_stats.png       — mean/std/CV of runtime, power, CPU across runs (graph 11)
+
+How cross-run statistics are calculated (graph 11 / console table)
+--------------------------------------------------------------------
+SAAF telemetry (per-invocation JSON in [EXP_DIR]/invocations/*.stdlog) is the
+primary source for runtime and CPU utilisation.  Cold starts (newcontainer==1)
+are excluded so only warm-start invocations contribute.
+
+  Runtime   — SAAF "runtime" field (ms → s).  We take the mean of all
+               warm-start invocations in a run to get one value per run.
+
+  CPU util  — SAAF cpu jiffies captured during the invocation window:
+               active = cpuUsr + cpuNice + cpuKrn + cpuIowait
+                      + cpuIrq + cpuSoftIrq + vmcpusteal
+               total  = active + cpuIdle
+               cpu%   = active / total * 100
+               Mean across warm invocations → one value per run.
+
+  Power     — mean package-power (W) during active windows from RAPL/turbostat
+               (SAAF does not report power).  One value per run.
+
+With one value per run for each metric we have a small sample
+  x₁, x₂, …, xₙ   (n = number of experiment dirs)
+
+  cross-run mean  μ  = (1/n) Σ xᵢ
+  cross-run std   σ  = sqrt[ (1/(n-1)) Σ (xᵢ − μ)² ]   (sample std, ddof=1)
+  CV              c  = σ / μ × 100  (%)
+
+CV < 5 % → highly repeatable; 5–15 % → moderate; > 15 % → noisy.
 """
 
-import argparse, csv, sys
+import argparse, csv, json, re as _re, sys
 from pathlib import Path
 from statistics import mean
 
@@ -207,6 +236,96 @@ def power_col(rapl_rows):
             return c
     # 3. otherwise first available
     return watt_cols[0]
+
+# ── SAAF log parsing ────────────────────────────────────────
+
+_RESP_START = _re.compile(r"^──+\s*Lambda Response\s*──+")
+_RESP_END   = _re.compile(r"^──+\s*$")
+
+def load_saaf_logs(exp_dir):
+    """
+    Parse every *.stdlog under [exp_dir]/invocations/ and return a list of
+    SAAF result dicts (one per successfully parsed invocation).
+
+    Log format:
+        ── Lambda Response ──────────────────────────────────────
+        { ...JSON... }
+        ─────────────────────────────────────────────────────────
+
+    Cold starts (newcontainer == 1) are excluded so callers only see
+    warm-start observations.
+    """
+    inv_dir = exp_dir / "invocations"
+    if not inv_dir.is_dir():
+        return []
+
+    results = []
+    for log_file in sorted(inv_dir.glob("*.stdlog")):
+        try:
+            text = log_file.read_text(errors="replace")
+        except OSError:
+            continue
+
+        lines = text.splitlines()
+        in_block = False
+        block_lines = []
+
+        for line in lines:
+            if not in_block:
+                if _RESP_START.match(line.strip()):
+                    in_block = True
+                    block_lines = []
+            else:
+                if _RESP_END.match(line.strip()):
+                    # Try to parse accumulated JSON
+                    blob = "\n".join(block_lines).strip()
+                    try:
+                        obj = json.loads(blob)
+                        # Exclude cold starts
+                        if int(obj.get("newcontainer", 0)) == 0:
+                            results.append(obj)
+                    except (json.JSONDecodeError, ValueError):
+                        pass
+                    in_block = False
+                else:
+                    block_lines.append(line)
+
+    return results
+
+def saaf_runtimes(saaf_records):
+    """Return list of warm-start runtimes in seconds (SAAF reports ms)."""
+    out = []
+    for r in saaf_records:
+        v = r.get("runtime")
+        if v is not None:
+            try:
+                out.append(float(v) / 1000.0)
+            except (TypeError, ValueError):
+                pass
+    return out
+
+def saaf_cpu_pcts(saaf_records):
+    """
+    Return list of warm-start CPU utilisation percentages derived from SAAF
+    jiffies fields captured during the invocation window.
+
+    active = cpuUsr + cpuNice + cpuKrn + cpuIowait + cpuIrq + cpuSoftIrq + vmcpusteal
+    cpu%   = active / (active + cpuIdle) * 100
+    """
+    def _f(r, k):
+        try: return float(r.get(k, 0) or 0)
+        except (TypeError, ValueError): return 0.0
+
+    out = []
+    for r in saaf_records:
+        active = (_f(r, "cpuUsr") + _f(r, "cpuNice") + _f(r, "cpuKrn") +
+                  _f(r, "cpuIowait") + _f(r, "cpuIrq") +
+                  _f(r, "cpuSoftIrq") + _f(r, "vmcpusteal"))
+        idle   = _f(r, "cpuIdle")
+        total  = active + idle
+        if total > 0:
+            out.append(active / total * 100.0)
+    return out
 
 # ── window classification ───────────────────────────────────
 
@@ -597,6 +716,189 @@ def plot_workload_comparison(exp_dirs, labels, out_dir):
     fig.savefig(out_dir / "10_workload_comparison.png", dpi=140)
     plt.close(fig); print("  ✓ 10_workload_comparison.png")
 
+# ── cross-run statistics ────────────────────────────────────
+
+def _run_stat(vals):
+    """
+    Given a list of per-run mean values, return a summary dict or None if
+    fewer than 2 runs have valid data (sample std requires n ≥ 2).
+    """
+    if len(vals) < 2:
+        return None
+    arr = np.array(vals, dtype=float)
+    m  = float(arr.mean())
+    sd = float(arr.std(ddof=1))          # sample standard deviation
+    cv = sd / m * 100.0 if m != 0 else 0.0
+    return {"per_run_means": vals, "mean": m, "std": sd, "cv": cv,
+            "n_runs": len(vals)}
+
+def compute_cross_run_stats(exp_dirs):
+    """
+    Aggregate per-run means for runtime, package power, and CPU utilisation,
+    then compute cross-run mean / std / CV.
+
+    Strategy per metric
+    -------------------
+    Runtime  : SAAF warm-start "runtime" (ms → s) → mean per run.
+    CPU util : SAAF warm-start cpu-jiffies → cpu% → mean per run.
+    Power    : mean RAPL/turbostat package power during active windows per run.
+
+    Returns a dict keyed by metric name; each value is either None (< 2 valid
+    runs) or a dict with keys: per_run_means, mean, std, cv, n_runs.
+    """
+    rt_means, cpu_means, pwr_means = [], [], []
+
+    for d in exp_dirs:
+        saaf = load_saaf_logs(d)
+
+        # Runtime ─ prefer SAAF; fall back to invocations.csv timestamps
+        rts = saaf_runtimes(saaf)
+        if not rts:
+            # fallback: wall-clock durations from invocations.csv
+            inv_rows = load_csv(d / "invocations.csv")
+            rapl_origin = rapl_clock_origin(d)
+            for r in inv_rows:
+                s_ep = parse_iso(r.get("start_iso"))
+                e_ep = parse_iso(r.get("end_iso"))
+                if s_ep is not None and e_ep is not None:
+                    rts.append(e_ep - s_ep)
+                else:
+                    s = num(r.get("start_elapsed_s"))
+                    e = num(r.get("end_elapsed_s"))
+                    if s is not None and e is not None:
+                        rts.append(e - s)
+        if rts:
+            rt_means.append(float(np.mean(rts)))
+
+        # CPU utilisation ─ prefer SAAF; fall back to proc.csv active-window mean
+        cpus = saaf_cpu_pcts(saaf)
+        if not cpus:
+            proc = load_csv(d / "proc.csv")
+            if proc:
+                xs_c, cpu_arr = colvals(proc, "cpu_pct")
+                windows = load_invocation_windows(d)
+                if len(xs_c) >= 2:
+                    if windows:
+                        active_cpu, _ = split_active_idle(xs_c, cpu_arr, windows)
+                        if len(active_cpu):
+                            cpus = list(active_cpu)
+                    else:
+                        cpus = list(cpu_arr)
+        if cpus:
+            cpu_means.append(float(np.mean(cpus)))
+
+        # Power ─ RAPL/turbostat active-window mean
+        rapl = load_power(d)
+        if rapl:
+            pkg = power_col(rapl)
+            if pkg:
+                xs_p, ws = colvals(rapl, pkg)
+                windows = load_invocation_windows(d)
+                if len(xs_p) >= 2:
+                    if windows:
+                        active_pwr, _ = split_active_idle(xs_p, ws, windows)
+                        if len(active_pwr):
+                            pwr_means.append(float(np.mean(active_pwr)))
+                    else:
+                        pwr_means.append(float(np.mean(ws)))
+
+    return {
+        "runtime": _run_stat(rt_means),
+        "cpu":     _run_stat(cpu_means),
+        "power":   _run_stat(pwr_means),
+    }
+
+def print_stats_table(stats, exp_dirs):
+    """Print a formatted cross-run statistics summary to stdout."""
+    print()
+    print("┌──────────────────────────────────────────────────────────────────────────┐")
+    print("│                      Cross-run statistics summary                        │")
+    print("├─────────────────────┬──────────────────┬────────────────┬───────────────┤")
+    print("│ Metric              │ Mean             │ Std Dev        │ CV (%)        │")
+    print("├─────────────────────┼──────────────────┼────────────────┼───────────────┤")
+
+    def _row(label, s, unit):
+        if s is None:
+            print(f"│ {label:<19} │ {'N/A (< 2 runs)':<16} │ {'—':<14} │ {'—':<13} │")
+        else:
+            print(f"│ {label:<19} │ {s['mean']:>10.4f} {unit:<5} │ "
+                  f"{s['std']:>8.4f} {unit:<5} │ {s['cv']:>10.2f}%  │")
+
+    _row("Runtime",        stats.get("runtime"), "s")
+    _row("CPU util",       stats.get("cpu"),     "%")
+    _row("Pkg Power",      stats.get("power"),   "W")
+
+    print("└─────────────────────┴──────────────────┴────────────────┴───────────────┘")
+    n = len(exp_dirs)
+    print(f"  Runs included: {n}  |  "
+          f"SAAF warm-start invocations only  |  "
+          f"CV < 5% → repeatable, 5–15% → moderate, > 15% → noisy")
+    print()
+
+    # Per-run breakdown
+    for metric, label, unit in [
+        ("runtime", "Runtime (s)",   "s"),
+        ("cpu",     "CPU util (%)", "%"),
+        ("power",   "Pkg Power (W)", "W"),
+    ]:
+        s = stats.get(metric)
+        if s is None:
+            continue
+        print(f"  {label}  per-run means:")
+        for d, v in zip(exp_dirs, s["per_run_means"]):
+            print(f"    {d.name:<30}  {v:.4f} {unit}")
+    print()
+
+def plot_cross_run_stats(exp_dirs, stats, out_dir):
+    """Graph 11: bar-per-run with cross-run mean ± 1σ band."""
+    metrics = []
+    for key, label, unit in [("runtime", "Runtime (s)", "s"),
+                              ("cpu",     "CPU util (%)", "%"),
+                              ("power",   "Pkg Power (W)", "W")]:
+        if stats.get(key):
+            metrics.append((label, stats[key], unit))
+    if not metrics:
+        print("  skip 11: need ≥ 2 runs with valid data"); return
+
+    n = len(metrics)
+    fig, axes = plt.subplots(1, n, figsize=(5 * n, 5))
+    if n == 1:
+        axes = [axes]
+
+    run_names = [d.name for d in exp_dirs]
+
+    for ax, (label, s, unit) in zip(axes, metrics):
+        vals  = s["per_run_means"]
+        names = run_names[:len(vals)]
+        x = np.arange(len(vals))
+
+        ax.bar(x, vals, color="#1f77b4", alpha=0.75, edgecolor="white", zorder=2)
+        ax.axhline(s["mean"], color="red", linestyle="--", linewidth=1.5, zorder=3,
+                   label=f"μ = {s['mean']:.4f} {unit}")
+        ax.fill_between([-0.5, len(vals) - 0.5],
+                        s["mean"] - s["std"], s["mean"] + s["std"],
+                        color="red", alpha=0.12, zorder=1,
+                        label=f"±1σ = {s['std']:.4f} {unit}")
+
+        ax.set_xticks(x)
+        ax.set_xticklabels(names, rotation=20, ha="right", fontsize=8)
+        ax.set_ylabel(label)
+        ax.set_title(
+            f"{label}\n"
+            f"μ={s['mean']:.4f} {unit}  σ={s['std']:.4f} {unit}  CV={s['cv']:.1f}%",
+            fontsize=9)
+        ax.legend(fontsize=8)
+        ax.grid(True, alpha=0.3, axis="y", zorder=0)
+
+    fig.suptitle(
+        f"Cross-run statistics — {len(exp_dirs)} run(s)  "
+        f"[warm starts only, SAAF + RAPL]",
+        fontsize=11)
+    fig.tight_layout()
+    fig.savefig(out_dir / "11_cross_run_stats.png", dpi=140)
+    plt.close(fig)
+    print("  ✓ 11_cross_run_stats.png")
+
 # ── main ────────────────────────────────────────────────────
 
 def main():
@@ -626,10 +928,13 @@ def main():
     plot_pmu_scatter(primary, args.out, best_feat)
     plot_rapl_stack(primary, args.out)
 
-    # multi-run graphs
+    # multi-run graphs + cross-run statistics
     if len(args.dirs) >= 2:
         plot_repeatability(args.dirs, args.out)
         plot_workload_comparison(args.dirs, args.labels, args.out)
+        stats = compute_cross_run_stats(args.dirs)
+        print_stats_table(stats, args.dirs)
+        plot_cross_run_stats(args.dirs, stats, args.out)
 
     print(f"\n[fc_analyze] Done → {args.out}/")
 
