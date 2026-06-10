@@ -23,7 +23,7 @@ graphs:
   04_energy_per_invocation.png — per-invocation energy histogram (graph 4)
   05_cpu_vs_power_scatter.png  — graph 5
   06_linear_baseline.png       — residuals over time (graph 6)
-  07_correlation_heatmap.png   — features × power (graph 7)
+  07_correlation_heatmap.png   — features x power (graph 7)
   08_ipc_vs_power.png          — strongest PMU feature scatter (graph 8)
   09_rapl_domains_stack.png    — package + dram + core stacked area (graph 9)
   10_workload_comparison.png   — across labelled experiments (graph 10)
@@ -52,10 +52,10 @@ With one value per run for each metric we have a small sample
   x₁, x₂, …, xₙ   (n = number of experiment dirs)
 
   cross-run mean  μ  = (1/n) Σ xᵢ
-  cross-run std   σ  = sqrt[ (1/(n-1)) Σ (xᵢ − μ)² ]   (sample std, ddof=1)
-  CV              c  = σ / μ × 100  (%)
+  cross-run std   σ  = sqrt[ (1/(n-1)) Σ (xᵢ - μ)² ]   (sample std, ddof=1)
+  CV              c  = σ / μ x 100  (%)
 
-CV < 5 % → highly repeatable; 5–15 % → moderate; > 15 % → noisy.
+CV < 5 % → highly repeatable; 5-15 % → moderate; > 15 % → noisy.
 """
 
 import argparse, csv, json, re as _re, sys
@@ -528,7 +528,7 @@ def plot_baseline_residuals(exp_dir, out_dir, fit=None):
                     color="#1f77b4", label="model over-predicts")
     for s, e in windows:
         ax.axvspan(s, e, alpha=0.08, color="grey")
-    ax.set_xlabel("Elapsed (s)"); ax.set_ylabel("Actual − predicted (W)")
+    ax.set_xlabel("Elapsed (s)"); ax.set_ylabel("Actual - predicted (W)")
     rmse = np.sqrt((residuals**2).mean())
     ax.set_title(f"Linear-baseline residuals — {exp_dir.name}\n"
                  f"RMSE = {rmse:.3f} W "
@@ -832,7 +832,7 @@ def print_stats_table(stats, exp_dirs):
     n = len(exp_dirs)
     print(f"  Runs included: {n}  |  "
           f"SAAF warm-start invocations only  |  "
-          f"CV < 5% → repeatable, 5–15% → moderate, > 15% → noisy")
+          f"CV < 5% → repeatable, 5-15% → moderate, > 15% → noisy")
     print()
 
     # Per-run breakdown
