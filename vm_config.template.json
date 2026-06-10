@@ -1,7 +1,7 @@
 {
     "boot-source":{
         "kernel_image_path": "@ROOT@/vmlinux-6.1.155",
-        "boot_args": "keep_bootcon console=ttyS0 reboot=k panic=1 init=/var/runtime/bootstrap handler=function.handler func_mem_size=256 func_timeout=300 nohz=off clocksource=kvm-clock",
+        "boot_args": "keep_bootcon console=ttyS0 reboot=k panic=1 init=/var/runtime/bootstrap handler=function.handler func_mem_size=3538 func_timeout=300 nohz=off clocksource=kvm-clock",
         "initrd_path":null
 
     },

@@ -18,7 +18,31 @@ set -euo pipefail
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/config.sh"
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/build.env"
-
+# Build OpenSSL Static Binary
+if [[ -f "/tmp/openssl/apps/openssl" ]]; then
+  echo "Static OpenSSL binary already built at /tmp/openssl/apps/openssl, skipping..."
+else
+  echo "Building static OpenSSL binary..."
+  cd /tmp
+  if [[ ! -f "openssl-3.5.7.tar.gz" ]]; then
+    curl -LO "$OPENSSL_URL"
+  else
+    echo "Source tarball already exists: openssl-3.5.7.tar.gz, skipping download..."
+  fi
+  if [[ ! -d "openssl-3.5.7" ]]; then
+    tar xzf openssl-3.5.7.tar.gz
+  else
+    echo "Source directory already exists: openssl-3.5.7, skipping extraction..."
+  fi
+  cd openssl-3.5.7
+  if [[ -f "apps/openssl" ]]; then
+    echo "Static OpenSSL binary already built at apps/openssl, skipping build..."
+  else
+    ./Configure no-shared no-dso -static linux-x86_64
+    make -j$(nproc)
+  fi
+  echo "Static OpenSSL binary built at: /tmp/openssl/apps/openssl"
+fi
 # ─── Build AWS Lambda base image rootfs ──────────────────────────────────────
 if [[ -f "aws_baseimage.ext4" ]]; then
   echo "Skipping rootfs build, already exists: aws_baseimage.ext4"
@@ -56,7 +80,8 @@ else
   # Mount doesn't exist on AWS Linux; need it to mount task dir
   sudo cp /tmp/busybox "$MOUNT_DIR/usr/bin/busybox"
   sudo chmod +x "$MOUNT_DIR/usr/bin/busybox"
-
+  sudo cp /tmp/openssl/apps/openssl "$MOUNT_DIR/usr/bin/openssl"
+  sudo chmod +x "$MOUNT_DIR/usr/bin/openssl"
   # Ensure /var/task exists as a mount point
   sudo mkdir -p "$MOUNT_DIR/var/task"
 

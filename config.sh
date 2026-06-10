@@ -18,7 +18,10 @@ LAMBDA_API_URL="https://api.github.com/repos/aws/aws-lambda-base-images"
 # ─── busybox (injected into the guest rootfs) ────────────────────────────────
 BUSYBOX_URL="https://busybox.net/downloads/binaries/1.35.0-x86_64-linux-musl/busybox"
 BUSYBOX_PATH="/tmp/busybox"
- 
+
+# ─── static OpenSSL binary ─────────────────────
+OPENSSL_URL="https://github.com/openssl/openssl/releases/download/openssl-3.5.7/openssl-3.5.7.tar.gz"
+OPENSSL_PATH="/tmp/openssl"
 # ─── Output filenames ────────────────────────────────────────────────────────
 # The final rootfs image produced by part 2 and verified by part 3.
 ROOTFS_IMAGE="aws_baseimage.ext4"
