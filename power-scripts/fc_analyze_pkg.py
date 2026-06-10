@@ -31,7 +31,7 @@ graphs:
 
 How cross-run statistics are calculated (graph 11 / console table)
 --------------------------------------------------------------------
-SAAF telemetry (per-invocation JSON in [EXP_DIR]/invocations/*.stdlog) is the
+SAAF telemetry (per-invocation JSON in [EXP_DIR]/invocations/*.stdout.log) is the
 primary source for runtime and CPU utilisation.  Cold starts (newcontainer==1)
 are excluded so only warm-start invocations contribute.
 
@@ -254,7 +254,7 @@ _RESP_END   = _re.compile(r"^──+\s*$")
 
 def load_saaf_logs(exp_dir):
     """
-    Parse every *.stdlog under [exp_dir]/invocations/ and return a list of
+    Parse every *.stdout.log under [exp_dir]/invocations/ and return a list of
     SAAF result dicts (one per successfully parsed invocation).
 
     Log format:
@@ -270,7 +270,7 @@ def load_saaf_logs(exp_dir):
         return []
 
     results = []
-    for log_file in sorted(inv_dir.glob("*.stdlog")):
+    for log_file in sorted(inv_dir.glob("*.stdout.log")):
         try:
             text = log_file.read_text(errors="replace")
         except OSError:
@@ -367,8 +367,104 @@ def integrate_per_window(xs, ys, windows):
 
 # ── individual plots ────────────────────────────────────────
 
-def plot_timeline(exp_dir, out_dir):
-    """Graph 1: power timeline with invocation bands."""
+def _envelope(xs, ys, nbins=2000):
+    """Per-bin (min, max) envelope of a dense series for fast, faithful plots.
+
+    A dense 100 Hz timeline can be ~200k points, which renders as an unreadable
+    blob. Binning by sample index (xs is ~uniform in time) and keeping each
+    bin's min/max collapses it to ~2*nbins points while preserving transient
+    spikes a plain stride-decimation would drop. Returns (bx, lo, hi).
+    """
+    n = len(xs)
+    edges = np.linspace(0, n, nbins + 1).astype(int)
+    bx, lo, hi = [], [], []
+    for i in range(nbins):
+        a, b = edges[i], edges[i + 1]
+        if b <= a:
+            continue
+        bx.append(float(xs[a:b].mean()))
+        lo.append(float(ys[a:b].min()))
+        hi.append(float(ys[a:b].max()))
+    return np.array(bx), np.array(lo), np.array(hi)
+
+def _decimate_mean(xs, arrs, nbins=2000):
+    """Per-bin mean of several aligned series (for stacked-area decimation,
+    where mean keeps the stacked totals faithful). Returns (bx, [arrays])."""
+    n = len(xs)
+    edges = np.linspace(0, n, nbins + 1).astype(int)
+    bx, out = [], [[] for _ in arrs]
+    for i in range(nbins):
+        a, b = edges[i], edges[i + 1]
+        if b <= a:
+            continue
+        bx.append(float(xs[a:b].mean()))
+        for j, arr in enumerate(arrs):
+            out[j].append(float(arr[a:b].mean()))
+    return np.array(bx), [np.array(o) for o in out]
+
+def _zoom_xlim(xs, windows, zoom_n):
+    """Return (xlim, k, suffix) covering the first `zoom_n` invocations — the
+    shared x-range for every zoomed companion plot. Falls back to the first
+    30 s when there are no invocation windows."""
+    if windows:
+        k = max(1, min(zoom_n, len(windows)))
+        x0, x1 = windows[0][0], windows[k - 1][1]
+        pad = max(0.5, 0.15 * (x1 - x0))
+        xlim = (max(float(xs.min()), x0 - pad), min(float(xs.max()), x1 + pad))
+        return xlim, k, f"first {k} invocations"
+    xlim = (float(xs.min()), min(float(xs.max()), float(xs.min()) + 30.0))
+    return xlim, 0, "first 30 s"
+
+def _draw_bands(ax, windows, *, band_cap=60, alpha=0.15, color="orange",
+                label="invocation"):
+    """Shade invocation windows, but only when few enough to be legible; above
+    band_cap they merge into a solid wash, so hide them and note the count."""
+    if windows and len(windows) <= band_cap:
+        for s, e in windows:
+            ax.axvspan(s, e, alpha=alpha, color=color)
+        ax.axvspan(0, 0, alpha=alpha, color=color, label=label)   # legend proxy
+    elif windows:
+        ax.plot([], [], " ", label=f"{len(windows)} invocations (bands hidden)")
+
+def _draw_timeline(ax, xs, ys, windows, pkg, *, decimate=True, band_cap=60,
+                   xlim=None):
+    """Draw the power trace + invocation bands onto ax.
+
+    decimate  — collapse a dense trace to a min/max envelope band.
+    band_cap  — draw individual invocation bands only when there are this few;
+                above it they merge into a solid wash, so hide them and note the
+                count instead.
+    xlim      — restrict to a (start, end) elapsed-second window (for the zoom).
+    """
+    if xlim is not None:
+        m = (xs >= xlim[0]) & (xs <= xlim[1])
+        xs, ys = xs[m], ys[m]
+        windows = [(s, e) for (s, e) in windows if e >= xlim[0] and s <= xlim[1]]
+        ax.set_xlim(*xlim)
+    if not len(xs):
+        return
+
+    if decimate and len(xs) > 4000:
+        bx, lo, hi = _envelope(xs, ys)
+        ax.fill_between(bx, lo, hi, color="#1f77b4", alpha=0.45, linewidth=0,
+                        label=f"{pkg} (min–max envelope)")
+        ax.plot(bx, hi, color="#1f77b4", linewidth=0.6)
+    else:
+        ax.plot(xs, ys, linewidth=1.0, color="#1f77b4", label=pkg)
+
+    _draw_bands(ax, windows, band_cap=band_cap, alpha=0.15, color="orange",
+                label="invocation")
+
+def plot_timeline(exp_dir, out_dir, zoom_n=12):
+    """Graph 1: power timeline, written as two complementary views.
+
+    01_power_timeline.png       — whole-experiment overview. A dense trace is
+                                  shown as a min/max envelope and per-invocation
+                                  bands are hidden once there are too many (>60)
+                                  to be legible.
+    01b_power_timeline_zoom.png — the first `zoom_n` invocations at full
+                                  resolution, with bands — the slide-ready view.
+    """
     rapl = load_power(exp_dir)
     if not rapl:
         print("  skip 01: no rapl.csv"); return
@@ -376,34 +472,44 @@ def plot_timeline(exp_dir, out_dir):
     if not pkg:
         print(f"  skip 01: no {POWER_DOMAIN} power column"); return
     xs, ys = colvals(rapl, pkg)
+    if not len(xs):
+        print("  skip 01: no power samples"); return
     windows = load_invocation_windows(exp_dir)
 
-    fig, ax = plt.subplots(figsize=(12, 5))
-    ax.plot(xs, ys, linewidth=1.2, color="#1f77b4", label=pkg)
-    for s, e in windows:
-        ax.axvspan(s, e, alpha=0.15, color="orange")
-    if windows:
-        ax.axvspan(0, 0, alpha=0.15, color="orange", label="invocation")
-    # Idle baseline = median of samples that fall OUTSIDE any invocation window.
+    # Idle baseline from the FULL series (outside windows, or first 5 s).
     if windows:
         _, idle_samples = split_active_idle(xs, ys, windows)
         idle_baseline = np.median(idle_samples) if len(idle_samples) else np.median(ys)
-    elif len(xs):
-        # No windows: estimate idle from the first few seconds of baseline
-        # samples (time-based, so it's independent of the collector rate — a
-        # fixed sample count like ys[:10] is only 0.1 s at 100 Hz).
+    else:
         base = ys[xs <= xs.min() + 5.0]
         idle_baseline = np.median(base) if len(base) else np.median(ys)
-    else:
-        idle_baseline = np.median(ys) if len(ys) else 0.0
+
+    # ── overview (decimated, bands capped) ──
+    fig, ax = plt.subplots(figsize=(12, 5))
+    _draw_timeline(ax, xs, ys, windows, pkg, decimate=True, band_cap=60)
     ax.axhline(idle_baseline, linestyle="--", color="grey", linewidth=1,
                label=f"idle ~{idle_baseline:.2f}W")
     ax.set_xlabel("Elapsed (s)"); ax.set_ylabel("Power (W)")
-    ax.set_title(f"Power timeline with invocations — {exp_dir.name}  [{pkg}]")
+    ax.set_title(f"Power timeline — {exp_dir.name}  [{pkg}]  "
+                 f"({len(windows)} invocations)")
     ax.grid(True, alpha=0.3); ax.legend(loc="best", fontsize=9)
     fig.tight_layout()
     fig.savefig(out_dir / "01_power_timeline.png", dpi=140)
     plt.close(fig); print("  ✓ 01_power_timeline.png")
+
+    # ── zoom: first `zoom_n` invocations at full resolution ──
+    xlim, k, suffix = _zoom_xlim(xs, windows, zoom_n)
+    fig, ax = plt.subplots(figsize=(12, 5))
+    _draw_timeline(ax, xs, ys, windows, pkg, decimate=False,
+                   band_cap=10**9, xlim=xlim)
+    ax.axhline(idle_baseline, linestyle="--", color="grey", linewidth=1,
+               label=f"idle ~{idle_baseline:.2f}W")
+    ax.set_xlabel("Elapsed (s)"); ax.set_ylabel("Power (W)")
+    ax.set_title(f"Power timeline ({suffix}) — {exp_dir.name}  [{pkg}]")
+    ax.grid(True, alpha=0.3); ax.legend(loc="best", fontsize=9)
+    fig.tight_layout()
+    fig.savefig(out_dir / "01b_power_timeline_zoom.png", dpi=140)
+    plt.close(fig); print("  ✓ 01b_power_timeline_zoom.png")
 
 def plot_idle_vs_active(exp_dir, out_dir):
     """Graph 2: idle vs active distribution."""
@@ -526,8 +632,38 @@ def plot_cpu_vs_power(exp_dir, out_dir):
     plt.close(fig); print("  ✓ 05_cpu_vs_power_scatter.png")
     return fit, r  # for reuse in graph 6
 
-def plot_baseline_residuals(exp_dir, out_dir, fit=None):
-    """Graph 6: residuals of linear cpu% baseline over time."""
+def _draw_residuals(ax, xs, res, windows, *, decimate=True, band_cap=60,
+                    xlim=None):
+    """Draw baseline residuals over time onto ax. Dense traces become a min/max
+    envelope; the directional under/over-predict fills are kept at full
+    resolution (zoom), where they're legible."""
+    if xlim is not None:
+        m = (xs >= xlim[0]) & (xs <= xlim[1])
+        xs, res = xs[m], res[m]
+        windows = [(s, e) for (s, e) in windows if e >= xlim[0] and s <= xlim[1]]
+        ax.set_xlim(*xlim)
+    if not len(xs):
+        return
+    ax.axhline(0, color="black", linewidth=0.8)
+    if decimate and len(xs) > 4000:
+        bx, lo, hi = _envelope(xs, res)
+        ax.fill_between(bx, lo, hi, color="#d62728", alpha=0.30, linewidth=0,
+                        label="residual min–max envelope")
+    else:
+        ax.plot(xs, res, linewidth=1.0, color="#d62728")
+        ax.fill_between(xs, res, 0, where=res > 0, alpha=0.25,
+                        color="#d62728", label="model under-predicts")
+        ax.fill_between(xs, res, 0, where=res < 0, alpha=0.25,
+                        color="#1f77b4", label="model over-predicts")
+    _draw_bands(ax, windows, band_cap=band_cap, alpha=0.08, color="grey",
+                label="invocation")
+
+def plot_baseline_residuals(exp_dir, out_dir, fit=None, zoom_n=12):
+    """Graph 6: residuals of the linear cpu% baseline over time.
+
+    Writes a decimated whole-experiment overview (06_linear_baseline.png) and a
+    full-resolution zoom of the first `zoom_n` invocations
+    (06b_linear_baseline_zoom.png)."""
     rapl = load_power(exp_dir)
     proc = load_csv(exp_dir / "proc.csv")
     if not rapl or not proc: return
@@ -541,27 +677,32 @@ def plot_baseline_residuals(exp_dir, out_dir, fit=None):
         fit = np.polyfit(cpu_aligned, ws, 1)
     predicted = np.polyval(fit, cpu_aligned)
     residuals = ws - predicted
-
     windows = load_invocation_windows(exp_dir)
 
-    fig, ax = plt.subplots(figsize=(12, 5))
-    ax.plot(xs_p, residuals, linewidth=1.2, color="#d62728")
-    ax.axhline(0, color="black", linewidth=0.8)
-    ax.fill_between(xs_p, residuals, 0, where=residuals > 0, alpha=0.25,
-                    color="#d62728", label="model under-predicts")
-    ax.fill_between(xs_p, residuals, 0, where=residuals < 0, alpha=0.25,
-                    color="#1f77b4", label="model over-predicts")
-    for s, e in windows:
-        ax.axvspan(s, e, alpha=0.08, color="grey")
-    ax.set_xlabel("Elapsed (s)"); ax.set_ylabel("Actual - predicted (W)")
     rmse = np.sqrt((residuals**2).mean())
-    ax.set_title(f"Linear-baseline residuals — {exp_dir.name}\n"
-                 f"RMSE = {rmse:.3f} W "
-                 f"(model: W = {fit[0]:.3f}·cpu% + {fit[1]:.2f})")
+    subtitle = f"RMSE = {rmse:.3f} W (model: W = {fit[0]:.3f}·cpu% + {fit[1]:.2f})"
+
+    # ── overview (decimated, bands capped) ──
+    fig, ax = plt.subplots(figsize=(12, 5))
+    _draw_residuals(ax, xs_p, residuals, windows, decimate=True, band_cap=60)
+    ax.set_xlabel("Elapsed (s)"); ax.set_ylabel("Actual - predicted (W)")
+    ax.set_title(f"Linear-baseline residuals — {exp_dir.name}\n{subtitle}")
     ax.legend(loc="best", fontsize=9); ax.grid(True, alpha=0.3)
     fig.tight_layout()
     fig.savefig(out_dir / "06_linear_baseline.png", dpi=140)
     plt.close(fig); print("  ✓ 06_linear_baseline.png")
+
+    # ── zoom: first `zoom_n` invocations at full resolution ──
+    xlim, k, suffix = _zoom_xlim(xs_p, windows, zoom_n)
+    fig, ax = plt.subplots(figsize=(12, 5))
+    _draw_residuals(ax, xs_p, residuals, windows, decimate=False,
+                    band_cap=10**9, xlim=xlim)
+    ax.set_xlabel("Elapsed (s)"); ax.set_ylabel("Actual - predicted (W)")
+    ax.set_title(f"Linear-baseline residuals ({suffix}) — {exp_dir.name}\n{subtitle}")
+    ax.legend(loc="best", fontsize=9); ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(out_dir / "06b_linear_baseline_zoom.png", dpi=140)
+    plt.close(fig); print("  ✓ 06b_linear_baseline_zoom.png")
 
 def plot_correlation(exp_dir, out_dir):
     """Graph 7: correlation heatmap of features vs power."""
@@ -690,8 +831,33 @@ def plot_pmu_scatter(exp_dir, out_dir, feature):
     fig.savefig(out_dir / "08_ipc_vs_power.png", dpi=140)
     plt.close(fig); print(f"  ✓ 08_ipc_vs_power.png (feature: {feature})")
 
-def plot_rapl_stack(exp_dir, out_dir):
-    """Graph 9: stacked RAPL domains."""
+def _draw_stack(ax, xs, series, windows, *, decimate=True, band_cap=60,
+                xlim=None):
+    """Stacked RAPL domains onto ax. Dense traces are decimated by per-bin mean
+    (keeps the stacked totals faithful) and invocation bands are capped."""
+    labels = list(series.keys())
+    arrs = [series[c] for c in labels]
+    if xlim is not None:
+        m = (xs >= xlim[0]) & (xs <= xlim[1])
+        xs = xs[m]; arrs = [a[m] for a in arrs]
+        windows = [(s, e) for (s, e) in windows if e >= xlim[0] and s <= xlim[1]]
+        ax.set_xlim(*xlim)
+    if not len(xs):
+        return
+    if decimate and len(xs) > 4000:
+        bx, dec = _decimate_mean(xs, arrs)
+        ax.stackplot(bx, *dec, labels=labels, alpha=0.75)
+    else:
+        ax.stackplot(xs, *arrs, labels=labels, alpha=0.75)
+    _draw_bands(ax, windows, band_cap=band_cap, alpha=0.12, color="grey",
+                label="invocation")
+
+def plot_rapl_stack(exp_dir, out_dir, zoom_n=12):
+    """Graph 9: stacked RAPL domains.
+
+    Writes a decimated whole-experiment overview (09_rapl_domains_stack.png) and
+    a full-resolution zoom of the first `zoom_n` invocations
+    (09b_rapl_domains_stack_zoom.png)."""
     rapl = load_power(exp_dir)
     if not rapl: return
     watt_cols = [c for c in rapl[0] if c.endswith("_watts")]
@@ -705,15 +871,29 @@ def plot_rapl_stack(exp_dir, out_dir):
         ys = np.array([num(r.get(c)) if num(r.get(c)) is not None else 0
                        for r in rapl])
         series[c] = ys[:len(xs)]
+    windows = load_invocation_windows(exp_dir)
 
+    # ── overview (decimated, bands capped) ──
     fig, ax = plt.subplots(figsize=(12, 5))
-    ax.stackplot(xs, *series.values(), labels=list(series.keys()), alpha=0.75)
+    _draw_stack(ax, xs, series, windows, decimate=True, band_cap=60)
     ax.set_xlabel("Elapsed (s)"); ax.set_ylabel("Power (W)")
     ax.set_title(f"RAPL domain breakdown — {exp_dir.name}")
     ax.legend(loc="upper right"); ax.grid(True, alpha=0.3)
     fig.tight_layout()
     fig.savefig(out_dir / "09_rapl_domains_stack.png", dpi=140)
     plt.close(fig); print("  ✓ 09_rapl_domains_stack.png")
+
+    # ── zoom: first `zoom_n` invocations at full resolution ──
+    xlim, k, suffix = _zoom_xlim(xs, windows, zoom_n)
+    fig, ax = plt.subplots(figsize=(12, 5))
+    _draw_stack(ax, xs, series, windows, decimate=False,
+                band_cap=10**9, xlim=xlim)
+    ax.set_xlabel("Elapsed (s)"); ax.set_ylabel("Power (W)")
+    ax.set_title(f"RAPL domain breakdown ({suffix}) — {exp_dir.name}")
+    ax.legend(loc="upper right"); ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(out_dir / "09b_rapl_domains_stack_zoom.png", dpi=140)
+    plt.close(fig); print("  ✓ 09b_rapl_domains_stack_zoom.png")
 
 def plot_workload_comparison(exp_dirs, labels, out_dir):
     """Graph 10: energy-per-invocation across labelled workloads."""
@@ -925,6 +1105,124 @@ def plot_cross_run_stats(exp_dirs, stats, out_dir):
     plt.close(fig)
     print("  ✓ 11_cross_run_stats.png")
 
+# ── per-invocation statistics (every invocation, not per-run) ───────────────
+
+def compute_per_invocation_stats(exp_dirs):
+    """
+    Pool one observation *per invocation* across all runs and summarise.
+
+    Unlike compute_cross_run_stats (which collapses each run to a single mean
+    first), this keeps every individual invocation so mean/std/CV describe the
+    spread across invocations — the numbers you'd quote on a slide.
+
+    Metrics
+      runtime  — SAAF warm-start "runtime" (ms → s), one per invocation
+      cpu      — SAAF warm-start cpu utilisation (%), one per invocation
+      energy   — RAPL/turbostat energy integrated over each invocation window (J)
+      power    — mean power (selected domain) during each invocation window (W)
+
+    Returns a dict keyed by metric; each value is None (no data) or a dict with
+    keys: values, n, mean, std, cv, min, max.
+    """
+    runtime, cpu, energy, power = [], [], [], []
+
+    for d in exp_dirs:
+        saaf = load_saaf_logs(d)
+        runtime.extend(saaf_runtimes(saaf))      # warm-start, one per invocation
+        cpu.extend(saaf_cpu_pcts(saaf))
+
+        rapl = load_power(d)
+        if not rapl:
+            continue
+        pkg = power_col(rapl)
+        if not pkg:
+            continue
+        xs, ys = colvals(rapl, pkg)
+        windows = load_invocation_windows(d)
+        # Energy per invocation (trapezoid over each window).
+        energy.extend(float(j) for j in integrate_per_window(xs, ys, windows))
+        # Mean active power per invocation.
+        for s, e in windows:
+            mask = (xs >= s) & (xs <= e)
+            if mask.sum() >= 1:
+                power.append(float(ys[mask].mean()))
+
+    def _summary(vals):
+        if not vals:
+            return None
+        arr = np.array(vals, dtype=float)
+        m  = float(arr.mean())
+        sd = float(arr.std(ddof=1)) if len(arr) > 1 else 0.0   # sample std
+        cv = sd / m * 100.0 if m != 0 else 0.0
+        return {"values": vals, "n": len(arr), "mean": m, "std": sd,
+                "cv": cv, "min": float(arr.min()), "max": float(arr.max())}
+
+    return {
+        "runtime": _summary(runtime),
+        "cpu":     _summary(cpu),
+        "energy":  _summary(energy),
+        "power":   _summary(power),
+    }
+
+def report_per_invocation_stats(exp_dirs, stats, out_dir):
+    """
+    Print a per-invocation mean/std/CV table to stdout and write it to
+    invocation_stats.txt (slide-ready), invocation_stats.md (markdown), and
+    invocation_stats.csv (machine-readable) under out_dir.
+    """
+    rows = [
+        ("Runtime",                          "s", stats.get("runtime")),
+        ("CPU util",                         "%", stats.get("cpu")),
+        ("Energy/invocation",                "J", stats.get("energy")),
+        (f"{POWER_DOMAIN.capitalize()} power", "W", stats.get("power")),
+    ]
+
+    # ── plain-text table (monospace, paste into a slide) ──
+    n_runs = len(exp_dirs)
+    head = (f"{'Metric':<20} {'Unit':<4} {'N':>4} {'Mean':>12} "
+            f"{'Std':>12} {'CV (%)':>8} {'Min':>12} {'Max':>12}")
+    sep = "─" * len(head)
+    lines = [f"Per-invocation statistics — pooled across {n_runs} run(s), "
+             f"warm starts only", sep, head, sep]
+    for label, unit, s in rows:
+        if s is None:
+            lines.append(f"{label:<20} {unit:<4} {'—':>4} {'N/A (no data)':>12}")
+        else:
+            lines.append(f"{label:<20} {unit:<4} {s['n']:>4} {s['mean']:>12.4f} "
+                         f"{s['std']:>12.4f} {s['cv']:>8.2f} "
+                         f"{s['min']:>12.4f} {s['max']:>12.4f}")
+    lines.append(sep)
+    lines.append("CV < 5% → repeatable, 5-15% → moderate, > 15% → noisy")
+    text = "\n".join(lines)
+    print(); print(text); print()
+
+    (out_dir / "invocation_stats.txt").write_text(text + "\n")
+
+    # ── markdown table ──
+    md = ["| Metric | Unit | N | Mean | Std | CV (%) | Min | Max |",
+          "|---|---|---:|---:|---:|---:|---:|---:|"]
+    for label, unit, s in rows:
+        if s is None:
+            md.append(f"| {label} | {unit} | — | N/A | — | — | — | — |")
+        else:
+            md.append(f"| {label} | {unit} | {s['n']} | {s['mean']:.4f} | "
+                      f"{s['std']:.4f} | {s['cv']:.2f} | {s['min']:.4f} | "
+                      f"{s['max']:.4f} |")
+    (out_dir / "invocation_stats.md").write_text("\n".join(md) + "\n")
+
+    # ── CSV ──
+    with open(out_dir / "invocation_stats.csv", "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["metric", "unit", "n", "mean", "std", "cv_pct", "min", "max"])
+        for label, unit, s in rows:
+            if s is None:
+                continue
+            w.writerow([label, unit, s["n"], f"{s['mean']:.6f}",
+                        f"{s['std']:.6f}", f"{s['cv']:.4f}",
+                        f"{s['min']:.6f}", f"{s['max']:.6f}"])
+
+    print(f"  ✓ invocation_stats.txt / .md / .csv → {out_dir}/")
+
 # ── main ────────────────────────────────────────────────────
 
 def main():
@@ -938,6 +1236,9 @@ def main():
     ap.add_argument("--power-domain", choices=["package", "core"],
                     default="package",
                     help="RAPL domain to analyse (default: package)")
+    ap.add_argument("--timeline-zoom-n", type=int, default=12,
+                    help="Invocations to show in the zoomed timeline "
+                         "(01b_power_timeline_zoom.png; default: 12)")
     args = ap.parse_args()
 
     global POWER_DOMAIN
@@ -951,15 +1252,19 @@ def main():
     print()
 
     # single-run graphs (use primary)
-    plot_timeline(primary, args.out)
+    plot_timeline(primary, args.out, zoom_n=args.timeline_zoom_n)
     plot_idle_vs_active(primary, args.out)
     plot_energy_distribution(primary, args.out)
     fit_r = plot_cpu_vs_power(primary, args.out)
     fit = fit_r[0] if fit_r else None
-    plot_baseline_residuals(primary, args.out, fit)
+    plot_baseline_residuals(primary, args.out, fit, zoom_n=args.timeline_zoom_n)
     best_feat = plot_correlation(primary, args.out)
     plot_pmu_scatter(primary, args.out, best_feat)
-    plot_rapl_stack(primary, args.out)
+    plot_rapl_stack(primary, args.out, zoom_n=args.timeline_zoom_n)
+
+    # per-invocation statistics (mean/std/CV across every invocation)
+    inv_stats = compute_per_invocation_stats(args.dirs)
+    report_per_invocation_stats(args.dirs, inv_stats, args.out)
 
     # multi-run graphs + cross-run statistics
     if len(args.dirs) >= 2:
