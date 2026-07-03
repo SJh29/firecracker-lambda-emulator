@@ -4,6 +4,7 @@
 # Usage: sudo ./run_firecracker.sh [-m MEM_MIB]
 #   -m MEM_MIB   Override guest memory (MiB). Also updates func_mem_size in
 #                boot_args so the guest init agrees with machine-config.
+#   -n NUM_INSTANCES Run multiple multiple instances upto n. n * 2 cannot be greater than num_cpu
 set -e
 
 # Resolve project root from the script's own location. Works under sudo because
@@ -11,20 +12,19 @@ set -e
 HERE="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 
 MEM_OVERRIDE=""
-while getopts "m:h" opt; do
-  case $opt in
-  m) MEM_OVERRIDE=$OPTARG ;;
-  h)
-    sed -n 's/^# \?//p' "$0" | head -n 5
-    exit 0
-    ;;
-  esac
+NUM_INSTANCES=1
+while getopts "m:n:h" opt; do
+    case $opt in
+        m) MEM_OVERRIDE=$OPTARG ;;
+        n) NUM_INSTANCES=$OPTARG ;;
+        h) sed -n 's/^# \?//p' "$0" | head -n 5; exit 0 ;;
+    esac
 done
 
-SOCKET="${SOCKET:-/tmp/firecracker.socket}"
-
-# Clean any stale socket (Firecracker refuses to start if it already exists)
-sudo rm -f "$SOCKET"
+SOCKET_FOLDER="${SOCKET_FOLDER:-/tmp/firecracker}"
+# Clean any stale sockets (Firecracker refuses to start if a socket already exists)
+sudo rm -rf "$SOCKET_FOLDER"
+sudo mkdir -p "$SOCKET_FOLDER"
 
 # Generate the runtime config with absolute paths derived from HERE
 sed "s|@ROOT@|$HERE|g" "$HERE/vm_config.template.json" >"$HERE/vm_config.json"
@@ -62,9 +62,18 @@ echo "max $CPU_PERIOD_US" | sudo tee "$CGROUP/cpu.max" >/dev/null
 echo $$ | sudo tee "$CGROUP/cgroup.procs" >/dev/null
 echo "Firecracker cgroup: $CGROUP  cpu.max=$CPU_QUOTA_US/$CPU_PERIOD_US  (MEM=${MEM_MIB} MiB)"
 
-exec "$HERE/firecracker" \
-  --api-sock "$SOCKET" \
-  --config-file "$HERE/vm_config.json"
+# Launch NUM_INSTANCES Firecracker VMs, each with its own socket
+# at $SOCKET_FOLDER/k.socket for k in the range [0, NUM_INSTANCES).
+for (( k=0; k<NUM_INSTANCES; k++ )); do
+    SOCKET="$SOCKET_FOLDER/$k.socket"
+    echo "Starting Firecracker instance $k on $SOCKET"
+    "$HERE/firecracker" \
+        --api-sock "$SOCKET" \
+        --config-file "$HERE/vm_config.json" &
+done
+
+# Wait for all launched instances to exit.
+wait
 
 #sudo $DIR/firecracker --api-sock "${API_SOCKET}" --enable-pci --config-file $DIR/vm_config.json
 
