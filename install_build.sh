@@ -135,10 +135,12 @@ export AWS_LAMBDA_FUNCTION_MEMORY_SIZE=$MEM_SIZE
 export CONFIG_VIRT_CPU_ACCOUNTING_GEN=y
 export CONFIG_IRQ_TIME_ACCOUNTING=y
 # ── Mount function drive ──
+# The function drive is shared read-only across all concurrent microVMs (and
+# Lambda's /var/task is read-only anyway), so mount it ro.
 mkdir -p /var/task
-/usr/bin/busybox mount /dev/vdb /var/task
+/usr/bin/busybox mount -o ro /dev/vdb /var/task
 if [ $? -eq 0 ]; then
-    echo "Mounted /dev/vdb at /var/task"
+    echo "Mounted /dev/vdb at /var/task (ro)"
 else
     echo "ERROR: Failed to mount /dev/vdb at /var/task"
     echo "Available block devices:"
@@ -146,12 +148,17 @@ else
 fi
 
 # ── Configure guest network ──
+# Address comes from the kernel cmdline so that concurrent microVMs each get a
+# distinct IP on their own /30 (run_firecracker.sh writes guest_ip= and gateway=
+# per instance). Defaults reproduce the original single-VM addressing.
+GUEST_IP=$(grep -oP 'guest_ip=\K\S+' /proc/cmdline || echo "172.16.0.2")
+GATEWAY=$(grep -oP 'gateway=\K\S+' /proc/cmdline || echo "172.16.0.1")
 /usr/bin/busybox ip link set lo up
-/usr/bin/busybox ip addr add 172.16.0.2/30 dev eth0
+/usr/bin/busybox ip addr add "$GUEST_IP/30" dev eth0
 /usr/bin/busybox ip link set eth0 up
-/usr/bin/busybox ip route add default via 172.16.0.1 dev eth0
+/usr/bin/busybox ip route add default via "$GATEWAY" dev eth0
 echo "nameserver 8.8.8.8" > /etc/resolv.conf
-echo "Guest network configured: 172.16.0.2/30 via 172.16.0.1"
+echo "Guest network configured: $GUEST_IP/30 via $GATEWAY"
 
 # ── Parse handler from kernel cmdline ──
 HANDLER=$(grep -oP 'handler=\K\S+' /proc/cmdline || echo "function.handler")
