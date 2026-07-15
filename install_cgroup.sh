@@ -3,11 +3,12 @@
 # install_cgroup.sh — Verify cgroup v2 prerequisites for per-instance Firecracker
 #                     CPU quota enforcement.
 #
-# Firecracker is launched by run_firecracker.sh inside /sys/fs/cgroup/firecracker
-# with cpu.max derived from vm_config.json's mem_size_mib (1 full vCPU per 1769 MB,
-# matching AWS Lambda's CPU-per-memory ratio). The cgroup itself is created at
-# run time by run_firecracker.sh; this script's job is to confirm the host
-# supports it:
+# Each microVM is launched by run_firecracker.sh inside its own leaf cgroup,
+# /sys/fs/cgroup/firecracker/vm<k>, with cpu.max derived from the template's
+# mem_size_mib (1 full vCPU per 1769 MB, matching AWS Lambda's CPU-per-memory
+# ratio) so concurrent instances get independent quotas. The cgroups themselves
+# are created at run time by run_firecracker.sh; this script's job is to confirm
+# the host supports it:
 #   - cgroup v2 unified hierarchy mounted at /sys/fs/cgroup
 #   - cpu controller available
 #   - cpu controller enabled in /sys/fs/cgroup/cgroup.subtree_control
@@ -54,4 +55,4 @@ fi
 
 echo
 echo "cgroup prerequisites OK. Per-instance CPU quota is applied at run time"
-echo "by run_firecracker.sh, derived from vm_config.json mem_size_mib."
+echo "by run_firecracker.sh, derived from vm_config.template.json mem_size_mib."
