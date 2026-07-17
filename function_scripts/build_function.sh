@@ -4,6 +4,9 @@
 #
 # The drive is mounted by the guest at /var/task, which is the
 # standard Lambda task root. The RIE will import handler from function.py.
+#
+# One image serves every concurrent microVM: the guests mount it read-only
+# (Lambda's task root is read-only anyway), so sharing it is safe.
 
 source "$(dirname "${BASH_SOURCE[0]}")/../common.sh"
 
@@ -27,8 +30,9 @@ if [[ -z "$(ls -A "$FUNCTION_DIR")" ]]; then
     exit 1
 fi
 
-# Build staging directory matching Lambda's expected task layout
-# mkdir -p "$FUNCTION_STAGING/var/task"
+# The drive is mounted directly at /var/task, so the function files sit at the
+# root of the image rather than under a var/task/ prefix.
+mkdir -p "$FUNCTION_STAGING"
 
 # Bundle every file from the function folder (preserving any subfolders)
 cp -a "$FUNCTION_DIR"/. "$FUNCTION_STAGING/"
