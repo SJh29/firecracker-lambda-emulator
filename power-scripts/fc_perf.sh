@@ -6,10 +6,10 @@
 # the data captured so far on disk — no end-of-run conversion step to skip.
 #
 # Usage: sudo fc_perf.sh [SOCKET] [INTERVAL_MS] [DURATION_SECS] [OUT_CSV]
-#   defaults: /tmp/firecracker.socket  1000  300  perf_<ts>.csv
+#   defaults: /tmp/firecracker/0.socket  1000  300  perf_<ts>.csv
 
 set -e
-SOCKET="${1:-/tmp/firecracker.socket}"
+SOCKET="${1:-/tmp/firecracker/0.socket}"
 INTERVAL_MS="${2:-1000}"
 DURATION="${3:-300}"
 OUT="${4:-perf_$(date -u +%Y%m%d_%H%M%S).csv}"

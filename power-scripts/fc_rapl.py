@@ -6,7 +6,7 @@ RAPL is socket-wide, but it's the most reliable source of real power data
 when turbostat isn't usable.
 
 Usage: sudo fc_rapl.py [--socket PATH] [--interval SECS] [--duration SECS] [--out CSV]
-   default socket:   /tmp/firecracker.socket
+   default socket:   /tmp/firecracker/0.socket
    default interval: 1.0 s
    default duration: 60 s
 """
@@ -41,7 +41,7 @@ def watts(prev, curr, dt):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--socket", default="/tmp/firecracker.socket",
+    ap.add_argument("--socket", default="/tmp/firecracker/0.socket",
                     help="Firecracker socket (informational only)")
     ap.add_argument("--interval", "-i", type=float, default=1.0)
     ap.add_argument("--duration", "-d", type=float, default=60.0)

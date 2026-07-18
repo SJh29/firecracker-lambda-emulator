@@ -2,10 +2,10 @@
 # fc_pidstat.sh — record per-process CPU, memory, IO, threads with pidstat.
 #
 # Usage: sudo fc_pidstat.sh [SOCKET] [INTERVAL_SECS] [DURATION_SECS] [OUT_CSV]
-#   defaults: /tmp/firecracker.socket  1  60  pidstat_<ts>.csv
+#   defaults: /tmp/firecracker/0.socket  1  60  pidstat_<ts>.csv
 
 set -e
-SOCKET="${1:-/tmp/firecracker.socket}"
+SOCKET="${1:-/tmp/firecracker/0.socket}"
 INTERVAL="${2:-1}"
 DURATION="${3:-60}"
 OUT="${4:-pidstat_$(date -u +%Y%m%d_%H%M%S).csv}"

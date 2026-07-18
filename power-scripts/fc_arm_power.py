@@ -67,7 +67,7 @@ def read_val(path):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--socket", default="/tmp/firecracker.socket",
+    ap.add_argument("--socket", default="/tmp/firecracker/0.socket",
                     help="informational only")
     ap.add_argument("--interval", "-i", type=float, default=1.0)
     ap.add_argument("--duration", "-d", type=float, default=60.0)

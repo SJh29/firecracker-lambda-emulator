@@ -3,13 +3,13 @@
 # x86 only. Skips cleanly on ARM. Falls back through RAPL issues on AMD/Intel.
 #
 # Usage: sudo fc_turbostat.sh [SOCKET] [INTERVAL_SECS] [DURATION_SECS] [OUT_CSV]
-#   defaults: /tmp/firecracker.socket  1  60  turbostat_<ts>.csv
+#   defaults: /tmp/firecracker/0.socket  1  60  turbostat_<ts>.csv
 #   INTERVAL_SECS may be fractional (e.g. 0.01 for 100 Hz sampling).
 
 set -e
 set -o pipefail   # so a turbostat failure isn't masked by the converter exiting 0
 DIR="$(cd "$(dirname "$0")" && pwd)"
-SOCKET="${1:-/tmp/firecracker.socket}"
+SOCKET="${1:-/tmp/firecracker/0.socket}"
 INTERVAL="${2:-1}"
 DURATION="${3:-60}"
 OUT="${4:-turbostat_$(date -u +%Y%m%d_%H%M%S).csv}"

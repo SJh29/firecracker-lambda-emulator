@@ -4,10 +4,10 @@
 # with one row per interval (suitable for ML ingestion).
 #
 # Usage: sudo fc_ml_metrics.sh [SOCKET] [INTERVAL_MS] [DURATION_SECS] [OUT_CSV]
-#   defaults: /tmp/firecracker.socket  1000  60  ml_features_<ts>.csv
+#   defaults: /tmp/firecracker/0.socket  1000  60  ml_features_<ts>.csv
 
 set -e
-SOCKET="${1:-/tmp/firecracker.socket}"
+SOCKET="${1:-/tmp/firecracker/0.socket}"
 INTERVAL_MS="${2:-1000}"
 DURATION="${3:-60}"
 OUT="${4:-ml_features_$(date -u +%Y%m%d_%H%M%S).csv}"
