@@ -29,14 +29,32 @@ Network constants and helper functions sourced by the operational scripts (`run_
 
 | Variable | Description | Default |
 |---|---|---|
-| `API_SOCKET` | Path to the Firecracker Unix API socket | `/tmp/firecracker.socket` |
+| `API_SOCKET_FOLDER` | Directory holding the per-instance API sockets (`<k>.socket`) | `/tmp/firecracker` |
+| `FC_RUN_DIR` | Directory holding the per-instance rootfs copies and generated configs | `<repo>/instances` |
 | `LOGFILE` | Path for Firecracker log output | `./firecracker.log` |
-| `TAP_DEV` | Name of the host TAP device bridging host and guest | `tap0` |
-| `TAP_IP` | Host-side IP address on the TAP interface | `172.16.0.1` |
-| `MASK_SHORT` | Subnet mask in CIDR notation for the TAP network | `/30` |
-| `FC_MAC` | Guest MAC address assigned to the virtual network interface | `06:00:AC:10:00:02` |
-| `GUEST_IP` | Guest-side IP address inside the microVM | `172.16.0.2` |
+| `NET_PREFIX` | First three octets of the guest network | `172.16.0` |
+| `MASK_SHORT` | Subnet mask in CIDR notation for each TAP network | `/30` |
+| `MAX_INSTANCES` | Instance-id ceiling (last usable /30 is `172.16.0.252`) | `64` |
 | `LAMBDA_PORT` | Port the Lambda Runtime Interface Emulator listens on inside the guest | `8080` |
+| `TAP_DEV`, `TAP_IP`, `GUEST_IP`, `FC_MAC` | Back-compat aliases for instance 0 (`tap0`, `172.16.0.1`, `172.16.0.2`, `06:00:AC:10:00:02`) | — |
+
+Rootfs copies live beside the base image rather than under `/tmp`: `/tmp` is tmpfs on some hosts, and a 1 GiB copy per VM would come out of RAM. Keeping them on the same filesystem as the base image also lets `cp --reflink` make them nearly free.
+
+### Instance Addressing
+
+Every host resource a VM owns is derived from its instance id, so no two instances collide. See [function_scripts.md](function_scripts.md#concurrency-model) for the full table.
+
+| Function | Signature | Returns for `k` | Instance 0 |
+|---|---|---|---|
+| `fc_socket` | `fc_socket [k]` | `/tmp/firecracker/<k>.socket` | `/tmp/firecracker/0.socket` |
+| `fc_config` | `fc_config [k]` | `instances/vm_config-<k>.json` | `instances/vm_config-0.json` |
+| `fc_rootfs` | `fc_rootfs [k]` | `instances/rootfs-<k>.ext4` | `instances/rootfs-0.ext4` |
+| `fc_tap` | `fc_tap [k]` | `tap<k>` | `tap0` |
+| `fc_host_ip` | `fc_host_ip [k]` | `172.16.0.<4k+1>` | `172.16.0.1` |
+| `fc_guest_ip` | `fc_guest_ip [k]` | `172.16.0.<4k+2>` | `172.16.0.2` |
+| `fc_mac` | `fc_mac [k]` | `06:00:AC:10:00:<4k+2>` | `06:00:AC:10:00:02` |
+| `fc_instances` | `fc_instances` | Ids of the VMs currently up, ascending, one per line — derived from the sockets on disk, so any script can discover the running set without being told how many were launched | — |
+| `fc_check_instance` | `fc_check_instance <k>` | Non-zero (with an error) if `k` is not an integer in `0..63` | — |
 
 ### Helper Functions
 
@@ -46,9 +64,9 @@ Network constants and helper functions sourced by the operational scripts (`run_
 | `success` | `success <msg>` | Print a success message in green |
 | `warn` | `warn <msg>` | Print a warning in yellow |
 | `error` | `error <msg>` | Print an error to stderr in red |
-| `fc_api` | `fc_api <METHOD> <PATH> <JSON>` | Send a request to the Firecracker API over `$API_SOCKET` via `curl --unix-socket` |
-| `ssh_guest` | `ssh_guest [cmd]` | SSH into the guest at `$GUEST_IP` using `$KEY_NAME` with strict-host-checking disabled |
-| `scp_to_guest` | `scp_to_guest <local> <remote>` | Copy a file into the guest at `$GUEST_IP` using `$KEY_NAME` |
+| `fc_api` | `fc_api <METHOD> <PATH> <JSON> [INSTANCE]` | Send a request to instance `INSTANCE`'s Firecracker API (default `0`) via `curl --unix-socket` |
+| `ssh_guest` | `ssh_guest [-i INSTANCE] [cmd]` | SSH into instance `INSTANCE`'s guest using `$KEY_NAME` with strict-host-checking disabled |
+| `scp_to_guest` | `scp_to_guest [-i INSTANCE] <local> <remote>` | Copy a file into instance `INSTANCE`'s guest using `$KEY_NAME` |
 
 ---
 
@@ -65,9 +83,20 @@ Intermediate environment variables written by `install_download.sh` and sourced 
 
 ---
 
-## [vm_config.json](../vm_config.json)
+## [vm_config.template.json](../vm_config.template.json)
 
-Static Firecracker VM configuration passed to the `--config-file` flag at launch. Edit to change vCPU count, memory, drive paths, or boot arguments.
+The Firecracker VM configuration **template**. Edit this to change vCPU count, memory, drive settings, or boot arguments.
+
+`run_firecracker.sh` renders one config per instance from it — `instances/vm_config-<k>.json` — substituting the placeholders below, and passes each to the matching Firecracker process via `--config-file`. The rendered files are generated artifacts: don't edit them, they're overwritten on every launch and deleted on shutdown.
+
+| Placeholder | Replaced with | Example (`k=1`) |
+|---|---|---|
+| `@ROOT@` | Absolute path to the repo | `/home/ubuntu/tooling-setup` |
+| `@ROOTFS@` | That instance's private rootfs copy | `.../instances/rootfs-1.ext4` |
+| `@TAP@` | That instance's TAP device | `tap1` |
+| `@MAC@` | That instance's guest MAC | `06:00:AC:10:00:06` |
+| `@GUEST_IP@` | That instance's guest IP | `172.16.0.6` |
+| `@HOST_IP@` | That instance's host IP (the guest's gateway) | `172.16.0.5` |
 
 ### `boot-source`
 
@@ -85,24 +114,28 @@ Static Firecracker VM configuration passed to the `--config-file` flag at launch
 | `reboot=k`, `panic=1` | On panic, print a message and halt rather than rebooting |
 | `init=/var/runtime/bootstrap` | Use the injected bootstrap wrapper as PID 1 |
 | `handler=function.handler` | Lambda handler passed via `/proc/cmdline` to the bootstrap |
-| `func_mem_size=256` | Memory size (MB) exposed to the Lambda runtime via `$AWS_LAMBDA_FUNCTION_MEMORY_SIZE` |
+| `func_mem_size=3538` | Memory size (MB) exposed to the Lambda runtime via `$AWS_LAMBDA_FUNCTION_MEMORY_SIZE`. Kept in sync with `mem_size_mib` by `run_firecracker.sh -m` |
 | `func_timeout=300` | Timeout (s) exposed to the Lambda runtime via `$AWS_LAMBDA_FUNCTION_TIMEOUT` |
+| `guest_ip=@GUEST_IP@` | Guest IP the bootstrap assigns to `eth0`. Per-instance, so concurrent VMs don't collide |
+| `gateway=@HOST_IP@` | Default route the bootstrap installs (the host end of that VM's /30) |
 | `nohz=off` | Disable the tickless kernel to improve timer accuracy inside the guest |
 | `clocksource=kvm-clock` | Use the KVM paravirtual clock for accurate timekeeping |
 
+The bootstrap parses `guest_ip` and `gateway` out of `/proc/cmdline`, falling back to `172.16.0.2`/`172.16.0.1` if absent — so a rootfs built before this change still boots as instance 0.
+
 ### `drives`
 
-| drive_id | `is_root_device` | Path | Description |
-|---|---|---|---|
-| `rootfs` | `true` | `aws_baseimage.ext4` | Lambda runtime rootfs; mounted as `/dev/vda` inside the guest |
-| `function` | `false` | `function.ext4` | Function code drive; mounted at `/var/task` as `/dev/vdb` by the bootstrap |
+| drive_id | `is_root_device` | `is_read_only` | Path | Description |
+|---|---|---|---|---|
+| `rootfs` | `true` | `false` | `@ROOTFS@` → `instances/rootfs-<k>.ext4` | Lambda runtime rootfs, mounted as `/dev/vda`. **Per-instance** — a private copy of `aws_baseimage.ext4`, because concurrent writes to one shared ext4 corrupt it |
+| `function` | `false` | `true` | `function.ext4` | Function code drive, mounted at `/var/task` as `/dev/vdb`. **Shared** across all instances — read-only, as Lambda's task root is |
 
 ### `machine-config`
 
 | Field | Description | Value |
 |---|---|---|
-| `vcpu_count` | Number of virtual CPUs | `2` |
-| `mem_size_mib` | Guest memory in MiB | `512` |
+| `vcpu_count` | Number of virtual CPUs. Raised to `ceil(mem_size_mib / 1769)` by `run_firecracker.sh` when memory exceeds 1769 MB | `2` |
+| `mem_size_mib` | Guest memory in MiB (per instance) | `3538` |
 | `smt` | Simultaneous multi-threading (hyper-threading) | `false` |
 | `track_dirty_pages` | Enable dirty page tracking (for live migration) | `false` |
 | `huge_pages` | Huge page backing | `None` |
@@ -112,8 +145,8 @@ Static Firecracker VM configuration passed to the `--config-file` flag at launch
 | Field | Description | Value |
 |---|---|---|
 | `iface_id` | Interface identifier | `net1` |
-| `host_dev_name` | Host TAP device to attach | `tap0` |
-| `guest_mac` | MAC address assigned inside the guest | `06:00:AC:10:00:02` |
+| `host_dev_name` | Host TAP device to attach | `@TAP@` → `tap<k>` |
+| `guest_mac` | MAC address assigned inside the guest | `@MAC@` → `06:00:AC:10:00:<4k+2>` |
 
 ---
 

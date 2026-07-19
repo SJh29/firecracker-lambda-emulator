@@ -67,12 +67,14 @@ Builds the rootfs image from the downloaded Lambda base image layers and extract
 **Build steps:**
 1. Extracts all `x86_64/*.tar.xz` layers from `aws-lambda-base-images/` into a staging directory.
 2. Creates a 1 GB ext4 image from the staging directory with `mkfs.ext4`.
-3. Mounts the image and injects a bootstrap wrapper at `/var/runtime/bootstrap` that mounts pseudo-filesystems, configures the guest network (`172.16.0.2/30`), mounts the function drive (`/dev/vdb → /var/task`), and then execs the Lambda entrypoint.
+3. Mounts the image and injects a bootstrap wrapper at `/var/runtime/bootstrap` that mounts pseudo-filesystems, configures the guest network, mounts the function drive read-only (`/dev/vdb → /var/task`), and then execs the Lambda entrypoint.
 4. Verifies the Firecracker archive SHA256 checksum, extracts it, and renames the binaries.
 
 **Notes:**
 - Busybox is necessary as a standalone binary to set up ip and mount the function drive.
 - Alternative rootfs may have these binaries present, but python3.10 AWS Baseimage used in this repository doesn't.
+- The bootstrap takes the guest's address from the kernel cmdline (`guest_ip=` / `gateway=`, written per instance by `run_firecracker.sh`), falling back to `172.16.0.2/30` via `172.16.0.1` when they're absent. This is what lets concurrent microVMs each hold a distinct IP — **a rootfs built before this change will bring every guest up as `172.16.0.2`, so rebuild it before running more than one instance.**
+- The function drive is mounted read-only so a single `function.ext4` can be shared by every concurrent microVM (Lambda's `/var/task` is read-only anyway).
 ---
 
 ## [install_cgroup.sh](../install_cgroup.sh)
@@ -85,7 +87,9 @@ Verifies cgroup v2 prerequisites for per-instance CPU quota enforcement and enab
 | `cpu` listed in `/sys/fs/cgroup/cgroup.controllers` | Host kernel exposes the cpu controller |
 | `cpu` listed in `/sys/fs/cgroup/cgroup.subtree_control` | Enables it via `echo +cpu` if not already set, so child cgroups can write `cpu.max` |
 
-The firecracker cgroup at `/sys/fs/cgroup/firecracker/` itself is created on demand by `run_firecracker.sh`, which derives `cpu.max` from `vm_config.json`'s `mem_size_mib` at the AWS Lambda ratio of **1 full vCPU per 1769 MB of guest memory**. When guest memory exceeds 1769 MB, `run_firecracker.sh` also raises `vcpu_count` to `ceil(mem_size_mib / 1769)` so the guest can use the additional host CPU time it has been granted.
+The cgroups themselves are created on demand by `run_firecracker.sh`: each microVM gets its own leaf cgroup, `/sys/fs/cgroup/firecracker/vm<k>`, so concurrent instances get **independent** quotas rather than sharing one. (cgroup v2 forbids processes in a cgroup that has children, so the launcher stays out of the parent and each VM enrols itself in its own leaf.) `cpu.max` is derived from `vm_config.template.json`'s `mem_size_mib` at the AWS Lambda ratio of **1 full vCPU per 1769 MB of guest memory**. When guest memory exceeds 1769 MB, `run_firecracker.sh` also raises `vcpu_count` to `ceil(mem_size_mib / 1769)` so the guest can use the additional host CPU time it has been granted.
+
+> The quota is written as `max` by default (i.e. unlimited) — set `CPU_MAX=$CPU_QUOTA_US` in `run_firecracker.sh`, or export `CPU_MAX`, to enforce it.
 
 ---
 

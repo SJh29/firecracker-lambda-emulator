@@ -38,30 +38,48 @@ stat -fc %T /sys/fs/cgroup
 
 # ── 2. Smoke test: one full launch + one invocation ────────────────────────
 # In a second terminal (or with -t bg) start Firecracker, then invoke.
-sudo ./run_firecracker.sh &        
-# writes /tmp/firecracker.socket
+# run_firecracker.sh brings up the TAP devices itself and cleans up on exit.
+sudo ./run_firecracker.sh &
+# writes /tmp/firecracker/0.socket
 sleep 2
-./function_scripts/invoke.sh       
-# should print {"message":"Hello Sparsh!", ...}
+./function_scripts/invoke.sh
+# should print the chacha20 benchmark result
 sudo ./kill_firecracker.sh
-sudo rm -f /tmp/firecracker.socket
 
-# ── 3. Single experiment at the template defaults (128 MiB) ────────────────
+# ── 2b. Same thing, 4 concurrent microVMs ──────────────────────────────────
+# Each VM gets its own socket, rootfs copy, tap<k>, MAC and guest IP.
+sudo ./run_firecracker.sh -n 4 &
+sleep 3
+./function_scripts/invoke.sh -a     # fires all 4 in parallel
+./function_scripts/invoke.sh -i 2   # or just instance 2
+sudo ./kill_firecracker.sh
+
+# ── 3. Single experiment at the template defaults ──────────────────────────
 # -t bg is required on a headless EC2 box (no X server for gnome-terminal/xterm).
-# -n 30 invocations, -E 12 sets the per-invocation duration estimate so
+# -n 30 invocation rounds, -E 7 sets the per-invocation duration estimate so
 # collectors run long enough for the whole sweep.
 sudo power-scripts/fc_experiment.sh -n 30 -E 7 -t bg -o experiment_default
+
+# ── 3b. Concurrency sweep — N VMs under simultaneous load ──────────────────
+# Every round fires all N instances at once. Per-VM traces land in vm<k>/;
+# rapl/turbostat are host-wide (one copy) since they measure the package.
+for VMS in 1 2 4 8; do
+    sudo ./kill_firecracker.sh 2>/dev/null || true
+    sudo power-scripts/fc_experiment.sh \
+        -N "$VMS" -n 30 -d 2 -E 12 -t bg \
+        -o "experiment_vms${VMS}_$(date -u +%Y%m%d_%H%M%S)"
+done
 
 # ── 4. Full memory sweep — the cgroup work makes this the headline plot ────
 # Each step:
 #   * Kills any leftover firecracker so we don't reuse a stale instance
-#   * Edits mem_size_mib in vm_config.template.json (run_firecracker.sh re-
-#     emits vm_config.json each launch and auto-bumps vcpu_count when >1769)
+#   * Edits mem_size_mib in vm_config.template.json (run_firecracker.sh renders
+#     instances/vm_config-<k>.json from it each launch and auto-bumps
+#     vcpu_count when >1769)
 #   * Runs the experiment into its own output directory
 # Tiers cover the AWS Lambda breakpoints; trim if your instance is small.
 for MEM in 128 256 512 1024 1769 3008 5308 10240; do
     sudo ./kill_firecracker.sh 2>/dev/null || true
-    sudo rm -f /tmp/firecracker.socket
     sudo sed -i -E "s/(\"mem_size_mib\"[[:space:]]*:)[[:space:]]*[0-9]+/\1$MEM/" \
         vm_config.template.json
     sudo power-scripts/fc_experiment.sh \
@@ -73,3 +91,9 @@ done
 tar -czvf all_exp.tar.gz experiment_*
 
 ```
+
+# Concurrency
+
+Instance `k` owns `/tmp/firecracker/<k>.socket`, `instances/rootfs-<k>.ext4`, `tap<k>`, host IP `172.16.0.<4k+1>` and guest IP `172.16.0.<4k+2>`. Instance 0 is exactly the old single-VM setup. See [Function Setup Scripts](./function_scripts.md#concurrency-model) for the full table.
+
+> **The rootfs must be rebuilt** (`./install_build.sh`) to pick up the guest bootstrap that reads its IP from the kernel cmdline. Without it, every guest still comes up as `172.16.0.2` and only instance 0 is reachable.

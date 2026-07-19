@@ -1,84 +1,134 @@
 # Function Setup Scripts
 
-Scripts for launching a Firecracker microVM and invoking a Lambda function inside it. Run these after the install scripts have completed.
+Scripts for launching Firecracker microVMs and invoking a Lambda function inside them. Run these after the install scripts have completed.
 
-Typical order: `setup_tap.sh` → `run_firecracker.sh` (separate terminal) → `build_function.sh` → `invoke.sh`. Use `kill_firecracker.sh` to stop the VM.
+Typical order: `build_function.sh` → `run_firecracker.sh` (separate terminal) → `invoke.sh`. Use `kill_firecracker.sh` to stop the VMs. `run_firecracker.sh` calls `setup_tap.sh` for you.
+
+---
+
+## Concurrency model
+
+Every VM is identified by an integer **instance id** `k`, starting at 0. All of its host-side resources are derived from `k`, so no two instances collide:
+
+| Resource | Instance `k` | Instance 0 | Instance 1 |
+|---|---|---|---|
+| API socket | `/tmp/firecracker/<k>.socket` | `/tmp/firecracker/0.socket` | `/tmp/firecracker/1.socket` |
+| Rootfs | `instances/rootfs-<k>.ext4` | `instances/rootfs-0.ext4` | `instances/rootfs-1.ext4` |
+| Config | `instances/vm_config-<k>.json` | `instances/vm_config-0.json` | `instances/vm_config-1.json` |
+| TAP device | `tap<k>` | `tap0` | `tap1` |
+| Host IP | `172.16.0.<4k+1>` | `172.16.0.1` | `172.16.0.5` |
+| Guest IP | `172.16.0.<4k+2>` | `172.16.0.2` | `172.16.0.6` |
+| Guest MAC | `06:00:AC:10:00:<4k+2>` | `...:02` | `...:06` |
+| cgroup | `/sys/fs/cgroup/firecracker/vm<k>` | `.../vm0` | `.../vm1` |
+
+Each VM gets its **own point-to-point /30**, so the host routing table stays unambiguous, and its **own writable copy of the rootfs** — sharing one writable ext4 across VMs corrupts it. The function drive (`function.ext4`) *is* shared, because the guests mount it read-only, which is also how Lambda's `/var/task` behaves.
+
+Instance 0 resolves to exactly the old single-VM values, so the previous setup is just the `k=0` case of this one. The last usable /30 is `172.16.0.252`, capping the design at **64 instances** (`k` = 0..63).
+
+The addressing helpers (`fc_socket`, `fc_tap`, `fc_host_ip`, `fc_guest_ip`, `fc_mac`, `fc_instances`) all live in [common.sh](../common.sh) — no script hardcodes these paths.
 
 ---
 
 ## [run_firecracker.sh](../run_firecracker.sh)
 
-Starts the Firecracker process bound to the API socket and loads the VM configuration.
+Starts one or more Firecracker microVMs, each bound to its own API socket and config.
 
-**Requires:** `./firecracker` binary, `./vm_config.json`, and the drives referenced inside it (`aws_baseimage.ext4`, `function.ext4`).
+**Requires:** `./firecracker` binary, `./vm_config.template.json`, `aws_baseimage.ext4`, `function.ext4`, `jq`.
 
-Run this in a dedicated terminal — it blocks until the VM is stopped. The TAP interface (`setup_tap.sh`) must be up before launching.
+Run this in a dedicated terminal — it blocks until the VMs are stopped, and cleans up sockets, rootfs copies and TAP devices on exit (including Ctrl-C).
 
 ```
-sudo ./run_firecracker.sh
+sudo ./run_firecracker.sh              # 1 VM
+sudo ./run_firecracker.sh -n 4         # 4 concurrent VMs
+sudo ./run_firecracker.sh -n 4 -m 1024 # 4 VMs, 1024 MiB each
 ```
 
-Internally runs:
-```
-sudo ./firecracker --api-sock /tmp/firecracker.socket --enable-pci --config-file ./vm_config.json
-```
+| Flag | Description | Default |
+|---|---|---|
+| `-n NUM_INSTANCES` | Number of concurrent microVMs (1–64) | `1` |
+| `-m MEM_MIB` | Guest memory per VM; also rewrites `func_mem_size` in the boot args | from template (`3538`) |
+
+**What it does, per instance:**
+1. Clones `aws_baseimage.ext4` → `instances/rootfs-<k>.ext4` (`cp --reflink=auto`, so it's a copy-on-write clone on btrfs/xfs and a hole-preserving copy elsewhere).
+2. Renders `vm_config.template.json` → `instances/vm_config-<k>.json`, substituting the rootfs path, TAP device, MAC, and the `guest_ip=`/`gateway=` kernel boot args.
+3. Creates the leaf cgroup `/sys/fs/cgroup/firecracker/vm<k>` and enrolls that VM in it, so the CPU quota is per-instance rather than shared.
+4. Launches Firecracker on `/tmp/firecracker/<k>.socket`.
+
+It also invokes `setup_tap.sh -n N` first, and warns if `2 × N` exceeds the host CPU count (contended VMs make the power numbers meaningless).
+
+> **CPU quota is off by default.** `cpu.max` is written as `max <period>`. Set `CPU_MAX=$CPU_QUOTA_US` (or export `CPU_MAX`) to enable the memory-proportional quota of 1 vCPU per 1769 MB.
 
 ---
 
 ## [function_scripts/setup_tap.sh](../function_scripts/setup_tap.sh)
 
-Creates the host TAP device and configures NAT so the guest can reach the internet.
+Creates one host TAP device per instance and configures NAT so the guests can reach the internet.
 
 **Requires:** `iproute2` (`ip`), `iptables`, `jq`.
 
+```
+sudo ./function_scripts/setup_tap.sh -n 4
+```
+
 **What it does:**
-1. Deletes any stale `tap0` device from a previous run, then recreates it at `172.16.0.1/30`.
+1. For each `k` in `0..N-1`: deletes any stale `tap<k>`, then recreates it at `172.16.0.<4k+1>/30`.
 2. Enables IPv4 forwarding (`/proc/sys/net/ipv4/ip_forward`).
 3. Sets `iptables FORWARD` policy to `ACCEPT`.
-4. Adds a `MASQUERADE` NAT rule on the host's default interface so guest traffic is rewritten with the host's public IP.
+4. Adds a single `MASQUERADE` NAT rule on the host's default interface — one rule covers every TAP.
 
-Run once before `run_firecracker.sh`. Re-running is safe — stale rules are removed first.
+`run_firecracker.sh` calls this automatically. Re-running is safe: stale devices and rules are removed first.
 
 ---
 
 ## [function_scripts/build_function.sh](../function_scripts/build_function.sh)
 
-Packages `function.py` and `Inspector.py` into a small ext4 drive that the guest mounts at `/var/task`.
+Packages everything in the `function/` folder into a small ext4 drive that the guests mount at `/var/task`.
 
-**Requires:** `e2fsprogs` (`mkfs.ext4`), `./function.py`, `./Inspector.py`.
+**Requires:** `e2fsprogs` (`mkfs.ext4`), a non-empty `function/` directory.
 
 **Produces:** `function.ext4` (32 MB ext4 image).
 
-**What it does:**
-1. Stages `function.py` and `Inspector.py` into a temporary directory mirroring the Lambda task layout.
-2. Creates a 32 MB ext4 image from that staging directory.
-3. Cleans up the staging directory.
+One image serves **every** concurrent microVM — the guests mount it read-only, so sharing it is safe and matches Lambda's read-only task root.
 
-Re-run this whenever `function.py` changes. The previous `function.ext4` is always replaced.
+Re-run this whenever the function changes. The previous `function.ext4` is always replaced.
 
 ---
 
 ## [function_scripts/invoke.sh](../function_scripts/invoke.sh)
 
-Sends a JSON payload to the Lambda Runtime Interface Emulator (RIE) running inside the guest and prints the response.
+Sends a JSON payload to the Lambda Runtime Interface Emulator (RIE) inside a guest and prints the response.
 
-**Requires:** A running Firecracker VM with the guest network reachable at `172.16.0.2:8080`, `curl`, `jq`.
+**Requires:** A running VM reachable at `172.16.0.<4k+2>:8080`, `curl`, `jq`.
 
-| Variable | Description | Default |
+| Flag | Description | Default |
 |---|---|---|
-| `PAYLOAD` | JSON body sent to the Lambda invocation endpoint | `{"name": "Sparsh"}` |
-| `TIMEOUT` | Maximum wait time in seconds for a response | `300` |
+| `-i INSTANCE` | Instance id to invoke | `0` |
+| `-a` | Invoke **every** running instance concurrently and wait for all of them | off |
+| `-p PAYLOAD` | JSON body sent to the invocation endpoint | chacha20 benchmark |
+| `-t TIMEOUT` | Maximum wait time in seconds | `300` |
 
-The script POSTs to `http://172.16.0.2:8080/2015-03-31/functions/function/invocations`. It exits non-zero if the response contains an `errorMessage` field or if `curl` times out.
+```
+./function_scripts/invoke.sh              # instance 0
+./function_scripts/invoke.sh -i 2         # instance 2
+./function_scripts/invoke.sh -a           # all running instances, in parallel
+```
+
+With `-a` the instances are fired simultaneously (not one after another), so they contend for the host the way a real concurrent workload would. Responses are buffered and printed in instance order so parallel output doesn't interleave. Exits non-zero if any response contains an `errorMessage` field or if `curl` times out.
 
 ---
 
 ## [kill_firecracker.sh](../kill_firecracker.sh)
 
-Cleanly stops a running Firecracker microVM.
+Cleanly stops **all** running Firecracker microVMs.
 
-If the API socket (`/tmp/firecracker.socket`) is present, sends a `SendCtrlAltDel` action via the Firecracker API to trigger a graceful guest shutdown. Otherwise falls back to `pkill` on the Firecracker process.
+Discovers the running instances from the sockets on disk (rather than being told how many there are), sends each a `SendCtrlAltDel`, then force-kills any VMM still alive 3 seconds later — a guest that ignores Ctrl-Alt-Del would otherwise keep its rootfs and TAP pinned and poison the next launch. Finally it removes the sockets, the TAP devices, and the per-instance rootfs copies and configs.
+
+If no sockets are found, falls back to `pkill` on the Firecracker process.
+
+| Flag | Description |
+|---|---|
+| `-k` | Keep the per-instance rootfs copies and configs (for post-mortem) |
 
 ```
-./kill_firecracker.sh
+sudo ./kill_firecracker.sh
 ```

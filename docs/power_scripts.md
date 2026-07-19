@@ -1,6 +1,23 @@
 # Power Measurement Scripts
 
-Scripts in `power-scripts/` for measuring CPU power, frequency, and per-process resource usage while a Firecracker microVM is running. All scripts take a Firecracker API socket path as their first argument and use it to identify the target process.
+Scripts in `power-scripts/` for measuring CPU power, frequency, and per-process resource usage while Firecracker microVMs are running. All scripts take a Firecracker API socket path as their first argument and use it to identify the target process.
+
+## Concurrent instances
+
+Sockets are per-instance: `/tmp/firecracker/<k>.socket` (see [function_scripts.md](function_scripts.md#concurrency-model)). Every script here defaults to instance 0 — pass another socket path to target a different VM:
+
+```
+sudo ./power-scripts/fc_pidstat.sh /tmp/firecracker/2.socket 1 60 vm2.csv
+```
+
+The collectors fall into two groups, and `fc_experiment.sh` runs them accordingly:
+
+| Scope | Scripts | Behaviour with N VMs |
+|---|---|---|
+| **Per-PID / per-cgroup** | `fc_proc.py`, `fc_pidstat.sh`, `fc_perf.sh`, `fc_ml_metrics.sh`, `fc_pressure.py` | One collector per VM. Each resolves its socket to that VM's PID (and its `/sys/fs/cgroup/firecracker/vm<k>` cgroup), so the traces stay cleanly separated. |
+| **Host-wide** | `fc_rapl.py`, `fc_turbostat.sh`, `fc_arm_power.py`, `fc_battery.py` | One collector for the whole host. RAPL and turbostat measure the CPU package, not a process, so N copies would just re-read the same counters. Their totals cover all VMs together — attribute per-VM energy using the per-instance `proc`/`perf` traces. |
+
+`fc_pid.sh` refuses to guess when it can't map a socket to a PID and more than one Firecracker is running, rather than silently attaching the collectors to the wrong VM. Install `fuser`, `ss` or `lsof` so the socket owner can always be resolved exactly.
 
 ---
 
@@ -17,7 +34,7 @@ sudo ./power-scripts/fc_turbostat.sh [SOCKET] [INTERVAL_SECS] [DURATION_SECS] [O
 
 | Argument | Description | Default |
 |---|---|---|
-| `SOCKET` | Firecracker API socket path (informational) | `/tmp/firecracker.socket` |
+| `SOCKET` | Firecracker API socket path (informational) | `/tmp/firecracker/0.socket` |
 | `INTERVAL_SECS` | Sampling interval in seconds | `1` |
 | `DURATION_SECS` | Total recording duration in seconds | `60` |
 | `OUT_CSV` | Output CSV path | `turbostat_<timestamp>.csv` |
@@ -44,7 +61,7 @@ sudo python3 power-scripts/fc_rapl.py [--socket PATH] [--interval SECS] [--durat
 
 | Argument | Description | Default |
 |---|---|---|
-| `--socket` | Firecracker API socket path (informational only) | `/tmp/firecracker.socket` |
+| `--socket` | Firecracker API socket path (informational only) | `/tmp/firecracker/0.socket` |
 | `--interval` | Sampling interval in seconds | `1.0` |
 | `--duration` | Total recording duration in seconds | `60.0` |
 | `--out` | Output CSV path | `rapl_<timestamp>.csv` |
@@ -68,7 +85,7 @@ sudo ./power-scripts/fc_pidstat.sh [SOCKET] [INTERVAL_SECS] [DURATION_SECS] [OUT
 
 | Argument | Description | Default |
 |---|---|---|
-| `SOCKET` | Firecracker API socket path | `/tmp/firecracker.socket` |
+| `SOCKET` | Firecracker API socket path | `/tmp/firecracker/0.socket` |
 | `INTERVAL_SECS` | Sampling interval in seconds | `1` |
 | `DURATION_SECS` | Total recording duration in seconds | `60` |
 | `OUT_CSV` | Output CSV path | `pidstat_<timestamp>.csv` |
@@ -90,7 +107,7 @@ python3 power-scripts/fc_proc.py [--socket PATH] [--interval SECS] [--duration S
 
 | Argument | Description | Default |
 |---|---|---|
-| `--socket` | Firecracker API socket path used to locate the process PID | `/tmp/firecracker.socket` |
+| `--socket` | Firecracker API socket path used to locate the process PID | `/tmp/firecracker/0.socket` |
 | `--interval` | Sampling interval in seconds | `1.0` |
 | `--duration` | Total recording duration in seconds | `60.0` |
 | `--out` | Output CSV path | `proc_<timestamp>.csv` |
@@ -119,3 +136,52 @@ python3 power-scripts/fc_plot_csv.py <CSV> [--out PNG] [--domains COL ...] [--no
 | `--domains` | Restrict plot to specific `*_watts` columns | all detected |
 | `--no-show` | Save image without opening a display window | off |
 | `--title` | Custom plot title | `RAPL power — <filename>` |
+
+---
+
+## [power-scripts/fc_experiment.sh](../power-scripts/fc_experiment.sh)
+
+Runs an end-to-end power-measurement experiment: launches the microVMs, starts every applicable collector, invokes the function N times, then stops the collectors and shuts the VMs down.
+
+**Requires:** `bc`, `sudo`, plus whichever collectors are installed (it skips the ones that aren't).
+
+**Usage:**
+```
+sudo ./power-scripts/fc_experiment.sh [OPTIONS]
+```
+
+| Flag | Description | Default |
+|---|---|---|
+| `-n COUNT` | Number of invocation rounds | `10` |
+| `-N NUM_VMS` | Concurrent microVMs (1–64) | `1` |
+| `-s SOCKET_DIR` | Firecracker socket directory | `/tmp/firecracker` |
+| `-l LAUNCH_SCRIPT` | Path to `run_firecracker.sh` | `../run_firecracker.sh` |
+| `-I INVOKE_SCRIPT` | Path to `invoke.sh` | `../function_scripts/invoke.sh` |
+| `-d DELAY` | Seconds between rounds | `2` |
+| `-r RATE_HZ` | Collector sampling rate (perf floors at 10 ms, so 100 Hz is the practical ceiling) | `100` |
+| `-E EST_SECS` | Estimated seconds per invocation; sizes how long collectors run so they outlast the experiment | `10` |
+| `-m MEM_MIB` | Guest memory tier, forwarded to `run_firecracker.sh -m` | template default |
+| `-o OUTDIR` | Output directory | `experiment_<ts>` |
+| `-t TERMINAL` | `gnome-terminal`, `konsole`, `xterm`, `tmux`, `screen`, or `bg` | `auto` |
+| `-q` | Don't capture per-invocation stdout/stderr | off |
+
+With `-N > 1`, **each round fires all N instances simultaneously** rather than one after another, so the VMs contend for the host the way a real concurrent workload would. A serial loop would measure something else entirely.
+
+```
+sudo ./power-scripts/fc_experiment.sh -N 4 -n 20 -m 1024
+```
+
+**Output layout:**
+
+```
+experiment_<ts>/
+  invocations.csv          # round, instance, start/end ISO + elapsed, duration, exit_code
+  invocations/<n>.<k>.*.log
+  rapl.csv turbostat.csv   # host-wide, one copy
+  vm0/  proc.csv pidstat.csv perf.csv ml_features.csv pressure.csv
+  vm1/  ...                # one dir per instance
+```
+
+With a single VM (`-N 1`, the default) the per-instance CSVs stay flat in the output directory instead of under `vm0/`, so the existing analyzers keep working unchanged.
+
+If instances are already running it reuses them and leaves them up afterwards; if it launched them itself it tears them down via `kill_firecracker.sh`. It refuses to start when the number of running instances is non-zero but smaller than `-N`, rather than half-using a stale set.
