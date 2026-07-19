@@ -1,14 +1,22 @@
 #!/bin/bash
 # fc_experiment.sh — run an end-to-end power-measurement experiment.
 #
-# 1. Launch run_firecracker.sh in a separate terminal
-# 2. Wait for the socket
+# 1. Launch run_firecracker.sh (N concurrent microVMs) in a separate terminal
+# 2. Wait for every socket
 # 3. Start collectors at the configured sampling rate (default 100 Hz)
-# 4. Invoke ../function-scripts/invoke.sh N times
+# 4. Invoke ../function_scripts/invoke.sh COUNT times; with N>1 every round
+#    fires all N instances concurrently, so the VMs are measured under
+#    simultaneous load rather than one after another
 # 5. Stop collectors
 # 6. Kill Firecracker
 #
-# Each invocation's stdout/stderr is captured to invocations/<n>.log
+# Per-PID collectors (proc, pidstat, perf, ml_features, pressure) run once per
+# instance; host-wide ones (rapl, turbostat, arm_power, battery) run once for
+# the whole host, since RAPL and turbostat measure the package, not a process.
+# With N>1, per-instance output lands in <outdir>/vm<k>/; with N=1 it stays flat
+# so the existing analyzers keep working unchanged.
+#
+# Each invocation's stdout/stderr is captured to invocations/<n>.<k>.log
 # and start/end timestamps go to invocations.csv so you can correlate
 # with power traces.
 #
@@ -16,15 +24,16 @@
 #   sudo ./fc_experiment.sh [OPTIONS]
 #
 # Options:
-#   -n COUNT            Number of invocations  (default: 10)
-#   -s SOCKET           Firecracker socket  (default: /tmp/firecracker.socket)
-#   -l LAUNCH_SCRIPT    run_firecracker.sh path  (default: ./run_firecracker.sh)
-#   -I INVOKE_SCRIPT    invoke.sh path  (default: ../function-scripts/invoke.sh)
-#   -d DELAY            Seconds between invocations  (default: 2)
+#   -n COUNT            Number of invocation rounds  (default: 10)
+#   -N NUM_VMS          Concurrent microVMs  (default: 1)
+#   -s SOCKET_DIR       Firecracker socket dir  (default: /tmp/firecracker)
+#   -l LAUNCH_SCRIPT    run_firecracker.sh path  (default: ../run_firecracker.sh)
+#   -I INVOKE_SCRIPT    invoke.sh path  (default: ../function_scripts/invoke.sh)
+#   -d DELAY            Seconds between rounds  (default: 2)
 #   -r RATE_HZ          Collector sampling rate in Hz (default: 100). At 100 Hz
 #                       a 0.3s invocation gets ~30 samples. perf's floor is
-#                       10ms, so 100 Hz is the practical ceiling; pidstat and
-#                       turbostat stay at 1 Hz (integer-second tools).
+#                       10ms, so 100 Hz is the practical ceiling; pidstat stays
+#                       at 1 Hz (integer-second tool).
 #   -E EST_SECS         Estimated seconds per invocation; sizes how long the
 #                       collectors run so they outlast the experiment (default: 10)
 #   -m MEM_MIB          Guest memory tier (MiB), passed through to run_firecracker.sh -m
@@ -42,7 +51,8 @@ ROOT="$(cd "$DIR/.." && pwd)"          # project root
 
 # ── defaults ─────────────────────────────────────────────
 COUNT=10
-SOCKET=/tmp/firecracker.socket
+NUM_VMS=1
+SOCKET_DIR=/tmp/firecracker
 LAUNCH="$ROOT/run_firecracker.sh"
 INVOKE="$ROOT/function_scripts/invoke.sh"
 DELAY=2
@@ -54,10 +64,11 @@ MEM_MIB=""           # if set, forwarded to run_firecracker.sh as `-m MEM_MIB`
 RATE_HZ=100          # collector sampling rate; see -r. Sub-second invocations
                      # need many samples per window — 1 Hz is far too coarse.
 
-while getopts "n:s:l:I:d:r:o:t:E:m:qh" opt; do
+while getopts "n:N:s:l:I:d:r:o:t:E:m:qh" opt; do
     case $opt in
         n) COUNT=$OPTARG ;;
-        s) SOCKET=$OPTARG ;;
+        N) NUM_VMS=$OPTARG ;;
+        s) SOCKET_DIR=$OPTARG ;;
         l) LAUNCH=$OPTARG ;;
         I) INVOKE=$OPTARG ;;
         d) DELAY=$OPTARG ;;
@@ -67,26 +78,35 @@ while getopts "n:s:l:I:d:r:o:t:E:m:qh" opt; do
         E) EST_INVOKE_SECS=$OPTARG ;;
         m) MEM_MIB=$OPTARG ;;
         q) CAPTURE=0 ;;
-        h) sed -n 's/^# \?//p' "$0" | head -n 37; exit 0 ;;
+        h) sed -n 's/^# \?//p' "$0" | head -n 40; exit 0 ;;
     esac
 done
+
+# Instance addressing (fc_socket, fc_guest_ip, fc_instances, ...) comes from
+# common.sh, which honours API_SOCKET_FOLDER — set it before sourcing.
+export API_SOCKET_FOLDER="$SOCKET_DIR"
+source "$ROOT/common.sh"
+
+[[ "$NUM_VMS" =~ ^[0-9]+$ ]] && (( NUM_VMS >= 1 )) \
+    || { echo "ERROR: -N must be a positive integer (got '$NUM_VMS')" >&2; exit 1; }
+fc_check_instance "$(( NUM_VMS - 1 ))" || exit 1
 
 # Derive per-collector interval arguments from the sampling rate.
 #   SEC_INT  — float seconds for the Python collectors (proc/pressure/rapl)
 #   MS_INT   — integer milliseconds for perf (-I); perf's floor is 10ms
-#   COARSE_INT — integer seconds for pidstat/turbostat/battery, which take
-#                whole-second intervals (their scripts do integer division on it)
+#   COARSE_INT — integer seconds for pidstat/battery, which take whole-second
+#                intervals (their scripts do integer division on it)
 SEC_INT=$(echo "scale=6; 1/$RATE_HZ" | bc -l)
 MS_INT=$(printf '%.0f' "$(echo "1000/$RATE_HZ" | bc -l)")
 (( MS_INT < 10 )) && MS_INT=10            # perf rejects intervals below 10ms
 COARSE_INT=$(printf '%.0f' "$SEC_INT")
 (( COARSE_INT < 1 )) && COARSE_INT=1
 
-# Args forwarded to the launch script. Currently only `-m`; this stays a single
-# string because all terminal backends below interpolate $LAUNCH_CMD into bash -c.
-LAUNCH_ARGS=""
-[[ -n "$MEM_MIB" ]] && LAUNCH_ARGS="-m $MEM_MIB"
-LAUNCH_CMD="$LAUNCH${LAUNCH_ARGS:+ $LAUNCH_ARGS}"
+# Args forwarded to the launch script. This stays a single string because all
+# terminal backends below interpolate $LAUNCH_CMD into bash -c.
+LAUNCH_ARGS="-n $NUM_VMS"
+[[ -n "$MEM_MIB" ]] && LAUNCH_ARGS="$LAUNCH_ARGS -m $MEM_MIB"
+LAUNCH_CMD="$LAUNCH $LAUNCH_ARGS"
 
 OUTDIR=${OUTDIR:-experiment_$(date -u +%Y%m%d_%H%M%S)}
 mkdir -p "$OUTDIR"
@@ -96,33 +116,43 @@ OUTDIR="$(cd "$OUTDIR" && pwd)"   # absolute path so collectors (esp. perf --out
 [[ -f "$LAUNCH" ]] || { echo "ERROR: launch script not found: $LAUNCH" >&2; exit 1; }
 [[ -f "$INVOKE" ]] || { echo "ERROR: invoke script not found: $INVOKE" >&2; exit 1; }
 
+# Per-instance output prefix: flat for a single VM (so existing analyzers see
+# the filenames they expect), one subdir per VM when running concurrently.
+vm_out() {
+    local k="$1"
+    if (( NUM_VMS == 1 )); then echo "$OUTDIR"
+    else mkdir -p "$OUTDIR/vm$k"; echo "$OUTDIR/vm$k"; fi
+}
+
 echo "═══════════════════════════════════════════════════════════"
 echo "  fc_experiment"
 echo "═══════════════════════════════════════════════════════════"
 echo "  launch    : $LAUNCH_CMD"
 echo "  invoke    : $INVOKE"
-echo "  socket    : $SOCKET"
-echo "  count     : $COUNT × (${DELAY}s gap)"
+echo "  sockets   : $SOCKET_DIR/{0..$(( NUM_VMS - 1 ))}.socket"
+echo "  vms       : $NUM_VMS"
+echo "  rounds    : $COUNT × (${DELAY}s gap)"
 [[ -n "$MEM_MIB" ]] && echo "  mem       : ${MEM_MIB} MiB"
 echo "  capture   : $([[ $CAPTURE -eq 1 ]] && echo yes || echo no)"
 echo "  output    : $OUTDIR"
 echo "═══════════════════════════════════════════════════════════"
 echo
 
-# ── 1. Launch Firecracker (or reuse a running instance) ──
-echo "[1/6] Checking for an existing Firecracker on $SOCKET ..."
+# ── 1. Launch Firecracker (or reuse running instances) ───
+echo "[1/6] Checking for existing Firecracker instances in $SOCKET_DIR ..."
 FC_STARTED=0
 FC_LOG="$OUTDIR/firecracker.log"
-EXISTING_FC_PID=""
-if [[ -S "$SOCKET" ]]; then
-    EXISTING_FC_PID=$(sudo bash "$DIR/fc_pid.sh" "$SOCKET" 2>/dev/null || true)
-fi
+RUNNING=($(fc_instances))
 
-if [[ -n "$EXISTING_FC_PID" ]]; then
-    echo "      reusing running Firecracker (pid $EXISTING_FC_PID) on $SOCKET"
-    echo "      skipping launch; collectors will attach via PID"
+if (( ${#RUNNING[@]} >= NUM_VMS )); then
+    echo "      reusing ${#RUNNING[@]} running instance(s); skipping launch"
 else
-    echo "      no running Firecracker found — launching..."
+    if (( ${#RUNNING[@]} > 0 )); then
+        echo "ERROR: found ${#RUNNING[@]} running instance(s) but need $NUM_VMS." >&2
+        echo "  Stop them first: sudo $ROOT/kill_firecracker.sh" >&2
+        exit 1
+    fi
+    echo "      no running Firecracker found — launching $NUM_VMS instance(s)..."
     if [[ "$TERM_KIND" == "auto" ]]; then
         if   command -v gnome-terminal &>/dev/null; then TERM_KIND=gnome-terminal
         elif command -v konsole        &>/dev/null; then TERM_KIND=konsole
@@ -135,7 +165,7 @@ else
 
     case "$TERM_KIND" in
         gnome-terminal) gnome-terminal -- bash -c "$LAUNCH_CMD 2>&1 | tee $FC_LOG; exec bash" ;;
-        konsole)        konsole -e bash -c "$LAUNCH_CMD 2>&1 | tee $FC_LOG; exec bash" & ;;
+        konsole)        konsole -e bash -c "$LAUNCH_CMD 2>&1 | tee $FC_LOG" & ;;
         xterm)          xterm -hold -e "bash -c '$LAUNCH_CMD 2>&1 | tee $FC_LOG'" & ;;
         tmux)           tmux new-session -d -s fc_exp "$LAUNCH_CMD 2>&1 | tee $FC_LOG" ;;
         screen)         screen -dmS fc_exp bash -c "$LAUNCH_CMD 2>&1 | tee $FC_LOG" ;;
@@ -146,36 +176,43 @@ else
     FC_STARTED=1
 fi
 
-# ── 2. Wait for socket ───────────────────────────────────
-echo "[2/6] Waiting for $SOCKET ..."
-for i in $(seq 1 30); do
-    [[ -S "$SOCKET" ]] && break
-    sleep 0.5
+# ── 2. Wait for every socket ─────────────────────────────
+echo "[2/6] Waiting for $NUM_VMS socket(s) ..."
+for (( k=0; k<NUM_VMS; k++ )); do
+    sock="$(fc_socket "$k")"
+    for i in $(seq 1 60); do
+        [[ -S "$sock" ]] && break
+        sleep 0.5
+    done
+    if [[ ! -S "$sock" ]]; then
+        echo "ERROR: socket never appeared at $sock after 30s." >&2
+        echo "  Firecracker log tail:" >&2
+        tail -20 "$FC_LOG" 2>/dev/null | sed 's/^/    /' >&2
+        exit 1
+    fi
 done
-if [[ ! -S "$SOCKET" ]]; then
-    echo "ERROR: socket never appeared at $SOCKET after 15s." >&2
-    echo "  Check that run_firecracker.sh actually starts Firecracker on this socket." >&2
-    echo "  Firecracker log tail:" >&2
-    tail -20 "$FC_LOG" 2>/dev/null | sed 's/^/    /' >&2
-    exit 1
-fi
-# Brief settle, then confirm Firecracker is actually alive
+
+# Brief settle, then confirm each Firecracker is actually alive.
 sleep 1
-FC_PID=$(sudo bash "$DIR/fc_pid.sh" "$SOCKET" 2>/dev/null || true)
-if [[ -z "$FC_PID" ]]; then
-    echo "ERROR: socket exists but no firecracker process owns it." >&2
-    echo "  Firecracker may have crashed after creating the socket. Log tail:" >&2
-    tail -20 "$FC_LOG" 2>/dev/null | sed 's/^/    /' >&2
-    exit 1
-fi
-echo "      Firecracker PID: $FC_PID"
+FC_PIDS=()
+for (( k=0; k<NUM_VMS; k++ )); do
+    pid=$(sudo bash "$DIR/fc_pid.sh" "$(fc_socket "$k")" 2>/dev/null || true)
+    if [[ -z "$pid" ]]; then
+        echo "ERROR: socket $(fc_socket "$k") exists but no firecracker process owns it." >&2
+        echo "  Firecracker may have crashed after creating the socket. Log tail:" >&2
+        tail -20 "$FC_LOG" 2>/dev/null | sed 's/^/    /' >&2
+        exit 1
+    fi
+    FC_PIDS+=("$pid")
+    echo "      instance $k: pid $pid, guest $(fc_guest_ip "$k")"
+done
 echo
 
 # ── 3. Start collectors ──────────────────────────────────
 echo "[3/6] Starting collectors at ${RATE_HZ} Hz (proc/pressure/rapl/turbostat=${SEC_INT}s, perf=${MS_INT}ms, pidstat=${COARSE_INT}s)..."
-# Collectors must outlast the whole experiment. Each iteration costs
-# roughly EST_INVOKE_SECS (the invocation) + DELAY (the gap). Add a margin
-# for the 3s pre/post baseline sleeps plus startup overhead.
+# Collectors must outlast the whole experiment. Each round costs roughly
+# EST_INVOKE_SECS (the invocation) + DELAY (the gap). Add a margin for the
+# pre/post baseline sleeps plus startup overhead.
 PER_ITER=$(echo "$EST_INVOKE_SECS + $DELAY" | bc -l)
 TOTAL_DURATION=$(printf '%.0f' "$(echo "$COUNT * $PER_ITER + 30" | bc -l)")
 echo "      est. per-invocation: ${EST_INVOKE_SECS}s, collectors run for ${TOTAL_DURATION}s"
@@ -188,68 +225,96 @@ start() {
 }
 
 ARCH=$(uname -m)
-start proc  sudo python3 "$DIR/fc_proc.py"  --socket "$SOCKET" -i "$SEC_INT" -d "$TOTAL_DURATION" -o "$OUTDIR/proc.csv"
-# pidstat takes whole-second intervals only, so it stays at COARSE_INT.
-command -v pidstat &>/dev/null && \
-    start pidstat sudo bash "$DIR/fc_pidstat.sh" "$SOCKET" "$COARSE_INT" "$TOTAL_DURATION" "$OUTDIR/pidstat.csv"
-command -v perf &>/dev/null && \
-    start perf sudo bash "$DIR/fc_perf.sh" "$SOCKET" "$MS_INT" "$TOTAL_DURATION" "$OUTDIR/perf.csv"
-command -v perf &>/dev/null && \
-    start ml_features sudo bash "$DIR/fc_ml_metrics.sh" "$SOCKET" "$MS_INT" "$TOTAL_DURATION" "$OUTDIR/ml_features.csv"
-start pressure sudo python3 "$DIR/fc_pressure.py" --socket "$SOCKET" -i "$SEC_INT" -d "$TOTAL_DURATION" -o "$OUTDIR/pressure.csv"
 
+# Per-instance collectors: one set per VM, scoped to that VM's PID/cgroup.
+for (( k=0; k<NUM_VMS; k++ )); do
+    sock="$(fc_socket "$k")"
+    out="$(vm_out "$k")"
+    tag=$( (( NUM_VMS == 1 )) && echo "" || echo ".vm$k" )
+
+    start "proc$tag"     sudo python3 "$DIR/fc_proc.py"     --socket "$sock" -i "$SEC_INT" -d "$TOTAL_DURATION" -o "$out/proc.csv"
+    start "pressure$tag" sudo python3 "$DIR/fc_pressure.py" --socket "$sock" -i "$SEC_INT" -d "$TOTAL_DURATION" -o "$out/pressure.csv"
+    # pidstat takes whole-second intervals only, so it stays at COARSE_INT.
+    command -v pidstat &>/dev/null && \
+        start "pidstat$tag" sudo bash "$DIR/fc_pidstat.sh" "$sock" "$COARSE_INT" "$TOTAL_DURATION" "$out/pidstat.csv"
+    command -v perf &>/dev/null && \
+        start "perf$tag" sudo bash "$DIR/fc_perf.sh" "$sock" "$MS_INT" "$TOTAL_DURATION" "$out/perf.csv"
+    command -v perf &>/dev/null && \
+        start "ml_features$tag" sudo bash "$DIR/fc_ml_metrics.sh" "$sock" "$MS_INT" "$TOTAL_DURATION" "$out/ml_features.csv"
+done
+
+# Host-wide collectors: RAPL and turbostat measure the whole package, and the
+# battery gauge the whole machine — one copy each, no matter how many VMs.
+# With N>1 their totals cover all instances together; attribute per-VM energy
+# using the per-instance proc/perf traces.
 if [[ "$ARCH" == "x86_64" || "$ARCH" == "amd64" ]]; then
     [[ -d /sys/class/powercap ]] && ls /sys/class/powercap/ 2>/dev/null | grep -q intel-rapl && \
-        start rapl sudo python3 "$DIR/fc_rapl.py" --socket "$SOCKET" -i "$SEC_INT" -d "$TOTAL_DURATION" -o "$OUTDIR/rapl.csv"
+        start rapl sudo python3 "$DIR/fc_rapl.py" --socket "$(fc_socket 0)" -i "$SEC_INT" -d "$TOTAL_DURATION" -o "$OUTDIR/rapl.csv"
     # turbostat reads power from MSRs, so it works on hosts where RAPL sysfs is
     # absent (e.g. EC2 .metal). The analyzers fall back to turbostat.csv when
     # rapl.csv is missing. It accepts fractional intervals, so it follows the
     # configured rate (SEC_INT) like the other power collectors.
     command -v turbostat &>/dev/null && \
-        start turbostat sudo bash "$DIR/fc_turbostat.sh" "$SOCKET" "$SEC_INT" "$TOTAL_DURATION" "$OUTDIR/turbostat.csv"
+        start turbostat sudo bash "$DIR/fc_turbostat.sh" "$(fc_socket 0)" "$SEC_INT" "$TOTAL_DURATION" "$OUTDIR/turbostat.csv"
 fi
 if [[ "$ARCH" == "aarch64" || "$ARCH" == "arm64" ]]; then
     ls /sys/class/hwmon/hwmon*/*_input &>/dev/null && \
-        start arm_power sudo python3 "$DIR/fc_arm_power.py" --socket "$SOCKET" -i "$SEC_INT" -d "$TOTAL_DURATION" -o "$OUTDIR/arm_power.csv"
+        start arm_power sudo python3 "$DIR/fc_arm_power.py" --socket "$(fc_socket 0)" -i "$SEC_INT" -d "$TOTAL_DURATION" -o "$OUTDIR/arm_power.csv"
 fi
 # Battery gauges refresh on the order of seconds, so sub-second sampling adds
 # nothing — keep it at COARSE_INT.
 ls /sys/class/power_supply/BAT* &>/dev/null && \
-    start battery sudo python3 "$DIR/fc_battery.py" --socket "$SOCKET" -i "$COARSE_INT" -d "$TOTAL_DURATION" -o "$OUTDIR/battery.csv"
+    start battery sudo python3 "$DIR/fc_battery.py" --socket "$(fc_socket 0)" -i "$COARSE_INT" -d "$TOTAL_DURATION" -o "$OUTDIR/battery.csv"
 
 echo
 sleep 8  # baseline samples before first invocation
 
 # ── 4. Invocations ───────────────────────────────────────
-echo "[4/6] Running $COUNT invocations of $INVOKE ..."
+echo "[4/6] Running $COUNT round(s) × $NUM_VMS instance(s) of $INVOKE ..."
 INV_CSV="$OUTDIR/invocations.csv"
-echo "invocation,start_iso,start_elapsed_s,end_iso,end_elapsed_s,duration_s,exit_code" > "$INV_CSV"
+echo "round,instance,start_iso,start_elapsed_s,end_iso,end_elapsed_s,duration_s,exit_code" > "$INV_CSV"
 
-T0=$(date +%s.%N)
-for i in $(seq 1 "$COUNT"); do
-    START_ISO=$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)
-    START=$(date +%s.%N)
+# One invocation of instance $2 in round $1. Appends its own row to INV_CSV;
+# rows are flushed one at a time so concurrent writers can't interleave a line.
+invoke_vm() {
+    local round="$1" k="$2" start_iso start end_iso end rc
+
+    start_iso=$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)
+    start=$(date +%s.%N)
 
     set +e
     if [[ $CAPTURE -eq 1 ]]; then
-        "$INVOKE" \
-            > "$OUTDIR/invocations/${i}.stdout.log" \
-            2> "$OUTDIR/invocations/${i}.stderr.log"
+        "$INVOKE" -i "$k" \
+            > "$OUTDIR/invocations/${round}.${k}.stdout.log" \
+            2> "$OUTDIR/invocations/${round}.${k}.stderr.log"
     else
-        "$INVOKE" >/dev/null 2>&1
+        "$INVOKE" -i "$k" >/dev/null 2>&1
     fi
-    RC=$?
+    rc=$?
     set -e
 
-    END_ISO=$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)
-    END=$(date +%s.%N)
-    START_EL=$(echo "$START - $T0" | bc -l)
-    END_EL=$(echo "$END - $T0" | bc -l)
-    DUR=$(echo "$END - $START" | bc -l)
-    printf "%d,%s,%.3f,%s,%.3f,%.3f,%d\n" \
-        "$i" "$START_ISO" "$START_EL" "$END_ISO" "$END_EL" "$DUR" "$RC" >> "$INV_CSV"
+    end_iso=$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)
+    end=$(date +%s.%N)
+    printf "%d,%d,%s,%.3f,%s,%.3f,%.3f,%d\n" \
+        "$round" "$k" \
+        "$start_iso" "$(echo "$start - $T0" | bc -l)" \
+        "$end_iso"   "$(echo "$end - $T0" | bc -l)" \
+        "$(echo "$end - $start" | bc -l)" "$rc" >> "$INV_CSV"
 
-    echo "      [$i/$COUNT] $(printf '%.2fs' $DUR) rc=$RC"
+    echo "      [round $round | vm $k] $(printf '%.2fs' "$(echo "$end - $start" | bc -l)") rc=$rc"
+    return $rc
+}
+
+T0=$(date +%s.%N)
+for i in $(seq 1 "$COUNT"); do
+    # Fire all instances at once so they contend for the host the way a real
+    # concurrent workload would; a serial loop would measure something else.
+    ROUND_PIDS=()
+    for (( k=0; k<NUM_VMS; k++ )); do
+        invoke_vm "$i" "$k" &
+        ROUND_PIDS+=($!)
+    done
+    for p in "${ROUND_PIDS[@]}"; do wait "$p" || true; done
     sleep "$DELAY"
 done
 echo "      → $INV_CSV"
@@ -266,12 +331,22 @@ echo
 
 # ── 6. Kill Firecracker ──────────────────────────────────
 echo "[6/6] Stopping Firecracker..."
-[[ -n "$FC_PID" ]] && { sudo kill "$FC_PID" 2>/dev/null || true; sleep 1; sudo kill -9 "$FC_PID" 2>/dev/null || true; }
-case "$TERM_KIND" in
-    tmux)   tmux kill-session -t fc_exp 2>/dev/null || true ;;
-    screen) screen -S fc_exp -X quit 2>/dev/null || true ;;
-    bg)     [[ -f "$OUTDIR/firecracker.pid" ]] && sudo kill "$(cat "$OUTDIR/firecracker.pid")" 2>/dev/null || true ;;
-esac
+if (( FC_STARTED )); then
+    # Graceful shutdown of every VM, plus teardown of taps and rootfs copies.
+    # sudo drops the environment, so pass the socket dir through explicitly —
+    # otherwise a custom -s would be lost and it would clean the default dir.
+    sudo API_SOCKET_FOLDER="$SOCKET_DIR" bash "$ROOT/kill_firecracker.sh" || true
+    for pid in "${FC_PIDS[@]}"; do
+        sudo kill -9 "$pid" 2>/dev/null || true
+    done
+    case "$TERM_KIND" in
+        tmux)   tmux kill-session -t fc_exp 2>/dev/null || true ;;
+        screen) screen -S fc_exp -X quit 2>/dev/null || true ;;
+        bg)     [[ -f "$OUTDIR/firecracker.pid" ]] && sudo kill "$(cat "$OUTDIR/firecracker.pid")" 2>/dev/null || true ;;
+    esac
+else
+    echo "      instances were already running before this run — leaving them up"
+fi
 
 echo
 echo "═══════════════════════════════════════════════════════════"
