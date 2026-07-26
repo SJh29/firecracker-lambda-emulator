@@ -29,3 +29,5 @@ __pycache__/
 # Generated at run time by run_firecracker.sh (per-instance rootfs + configs)
 instances/
 vm_config.json
+NOTES.md
+commit.md
