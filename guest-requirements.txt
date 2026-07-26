@@ -1,0 +1,8 @@
+# Python packages vendored into the guest rootfs at build time by
+# install_build.sh, using the base image's own /var/lang/bin/pip inside a
+# chroot (so wheels match the guest: CPython 3.10 / manylinux2014 / x86_64).
+#
+# These end up in the guest's site-packages and are importable by any function.
+# One per line; pin versions here if you need reproducible builds.
+
+igraph

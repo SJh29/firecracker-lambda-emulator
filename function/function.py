@@ -1,5 +1,19 @@
 #cloud_function(platforms=[Platform.AWS], memory=512, config=config)
 def handler(request, context):
+    # Dispatch between two benchmarks based on the request. The chacha20 cipher
+    # benchmark runs when method=chacha20 is present; anything else runs the
+    # SeBS 502.graph-mst (Barabasi graph + spanning tree) benchmark.
+    #
+    # "present" here means the selected cipher method is chacha20 — the invoke
+    # tooling sends {"method": "chacha20", ...}. To flip the default, change the
+    # condition below.
+    method = str(request.get('method', '')).lstrip('-').lower()
+    if method == 'chacha20':
+        return chacha20_benchmark(request, context)
+    return sebs_502(request, context)
+
+
+def chacha20_benchmark(request, context):
     import json
     import logging
     from Inspector import Inspector
@@ -72,4 +86,32 @@ def handler(request, context):
         inspector.addAttribute("message", "Hello World!")
 
     inspector.inspectAllDeltas()
+    return inspector.finish()
+
+
+def sebs_502(request, context):
+    # SeBS 502.graph-mst: build a Barabasi–Albert graph of `size` vertices and
+    # compute a spanning tree. `size` is required in the request.
+    #
+    # NOTE: this repo bundles Inspector.py directly at /var/task, so it's
+    # imported as `from Inspector import Inspector` rather than the SeBS/SAAF
+    # `from SAAF import Inspector`. `igraph` is vendored into the guest rootfs by
+    # install_build.sh (see guest-requirements.txt), so it's importable here
+    # after the rootfs is (re)built.
+    from Inspector import Inspector
+    import datetime, igraph
+    req_size = int(request['size'])
+    inspector = Inspector()
+    inspector.inspectAll()
+    graph_generating_begin = datetime.datetime.now()
+    graph = igraph.Graph.Barabasi(req_size, 10)
+    graph_generating_end = datetime.datetime.now()
+
+    process_begin = datetime.datetime.now()
+    result = graph.spanning_tree(None, False)
+    process_end = datetime.datetime.now()
+    inspector.addAttribute("graph_generating_time", (graph_generating_end - graph_generating_begin).total_seconds())
+    inspector.addAttribute("process_time", (process_end - process_begin).total_seconds())
+    inspector.inspectAllDeltas()
+
     return inspector.finish()

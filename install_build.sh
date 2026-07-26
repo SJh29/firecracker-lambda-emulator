@@ -10,7 +10,8 @@
 #   - build.env                      (written by part 1)
 #
 # Produces:
-#   - aws_baseimage.ext4             (1G ext4 image with bootstrap wrapper injected)
+#   - aws_baseimage.ext4             (1.5G ext4 image with bootstrap wrapper injected
+#                                     and guest-requirements.txt deps vendored in)
 #   - release-<version>-<arch>/      (extracted Firecracker archive)
 #   - ./firecracker, ./jailer        (renamed binaries in current dir)
 
@@ -83,7 +84,10 @@ else
   # Create ext4 filesystem image
   echo "Creating ext4 image..."
   sudo chown -R root:root lambda-rootfs
-  sudo truncate -s 1G "$IMG_PARTIAL"
+  # 1.5G leaves headroom for guest-vendored deps (igraph + bundled libs) and the
+  # function's /tmp scratch writes. The file is sparse and the rootfs clones are
+  # copy-on-write, so a larger size costs almost nothing on disk.
+  sudo truncate -s 1536M "$IMG_PARTIAL"
   sudo mkfs.ext4 -d lambda-rootfs -F "$IMG_PARTIAL"
 
   # Clean up extracted rootfs
@@ -102,6 +106,12 @@ else
   sudo chmod +x "$MOUNT_DIR/usr/bin/openssl"
   # Ensure /var/task exists as a mount point
   sudo mkdir -p "$MOUNT_DIR/var/task"
+
+  # Bake the resolver into the image. The nameserver is constant (only the guest
+  # IP/gateway vary per instance, and those come from the kernel cmdline), so
+  # there's no reason to write resolv.conf at runtime — doing it here means the
+  # rootfs can be mounted read-only without the bootstrap hitting EROFS.
+  echo "nameserver 8.8.8.8" | sudo tee "$MOUNT_DIR/etc/resolv.conf" >/dev/null
 
   # Move the real bootstrap aside
   sudo mv "$MOUNT_DIR/var/runtime/bootstrap" "$MOUNT_DIR/var/runtime/bootstrap.real"
@@ -157,7 +167,8 @@ GATEWAY=$(grep -oP 'gateway=\K\S+' /proc/cmdline || echo "172.16.0.1")
 /usr/bin/busybox ip addr add "$GUEST_IP/30" dev eth0
 /usr/bin/busybox ip link set eth0 up
 /usr/bin/busybox ip route add default via "$GATEWAY" dev eth0
-echo "nameserver 8.8.8.8" > /etc/resolv.conf
+# resolv.conf is baked into the image at build time (constant nameserver), so
+# nothing is written here — the rootfs can stay read-only.
 echo "Guest network configured: $GUEST_IP/30 via $GATEWAY"
 
 # ── Parse handler from kernel cmdline ──
@@ -168,6 +179,40 @@ echo "Handler: $HANDLER"
 exec /lambda-entrypoint.sh "$HANDLER"
 WRAPPER
   sudo chmod +x "$MOUNT_DIR/var/runtime/bootstrap"
+
+  # ── Vendor guest Python deps into the rootfs using the image's OWN pip ──────
+  # /var/lang/bin/pip belongs to the guest interpreter, so chrooting into the
+  # rootfs and running it fetches wheels that match the guest exactly (cp310 /
+  # manylinux2014 / x86_64) — no host pip and no cross-compilation involved.
+  # Deps are declared in guest-requirements.txt; they land in the guest's
+  # site-packages and are importable by any function (e.g. igraph for sebs_502).
+  GUEST_REQS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/guest-requirements.txt"
+  if [[ -s "$GUEST_REQS" ]]; then
+    if [[ -x "$MOUNT_DIR/var/lang/bin/pip" ]]; then
+      echo "Installing guest Python deps via the image's own pip (chroot)..."
+      sudo cp "$GUEST_REQS" "$MOUNT_DIR/tmp/guest-requirements.txt"
+      # pip needs DNS + /dev/urandom + /proc inside the chroot.
+      [[ -s "$MOUNT_DIR/etc/resolv.conf" ]] || \
+        echo "nameserver 8.8.8.8" | sudo tee "$MOUNT_DIR/etc/resolv.conf" >/dev/null
+      sudo mount --bind /dev  "$MOUNT_DIR/dev"
+      sudo mount --bind /proc "$MOUNT_DIR/proc"
+      sudo mount --bind /sys  "$MOUNT_DIR/sys"
+      pip_rc=0
+      sudo chroot "$MOUNT_DIR" /var/lang/bin/pip install \
+        --no-cache-dir --no-input --disable-pip-version-check \
+        -r /tmp/guest-requirements.txt || pip_rc=$?
+      # Always undo the bind mounts before the rootfs umount, even on failure.
+      sudo umount "$MOUNT_DIR/sys"  || true
+      sudo umount "$MOUNT_DIR/proc" || true
+      sudo umount "$MOUNT_DIR/dev"  || true
+      sudo rm -f "$MOUNT_DIR/tmp/guest-requirements.txt"
+      (( pip_rc == 0 )) || { echo "ERROR: guest pip install failed (rc=$pip_rc)" >&2; exit 1; }
+      echo "Guest deps installed: $(tr '\n' ' ' <"$GUEST_REQS")"
+    else
+      echo "WARNING: /var/lang/bin/pip not found in rootfs — skipping guest deps." >&2
+    fi
+  fi
+
   sudo umount "$MOUNT_DIR"
   sudo rmdir "$MOUNT_DIR"
   MOUNT_DIR=""
