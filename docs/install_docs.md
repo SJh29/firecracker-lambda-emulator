@@ -68,10 +68,12 @@ Builds the rootfs image from the downloaded Lambda base image layers and extract
 1. Extracts all `x86_64/*.tar.xz` layers from `aws-lambda-base-images/` into a staging directory.
 2. Creates a 1 GB ext4 image from the staging directory with `mkfs.ext4`.
 3. Mounts the image and injects a bootstrap wrapper at `/var/runtime/bootstrap` that mounts pseudo-filesystems, configures the guest network, mounts the function drive read-only (`/dev/vdb → /var/task`), and then execs the Lambda entrypoint.
-4. Verifies the Firecracker archive SHA256 checksum, extracts it, and renames the binaries.
+4. Vendors any guest Python packages listed in `guest-requirements.txt` (e.g. `igraph`) into the rootfs by chrooting into the mounted image and running its own `/var/lang/bin/pip`. Using the guest's pip guarantees the wheels match the guest interpreter (CPython 3.10 / manylinux2014 / x86_64) with no host pip or cross-compilation. The packages land in the guest site-packages, importable by any function.
+5. Verifies the Firecracker archive SHA256 checksum, extracts it, and renames the binaries.
 
 **Notes:**
 - Busybox is necessary as a standalone binary to set up ip and mount the function drive.
+- The rootfs is 1.5 GB to leave room for the vendored deps and the function's `/tmp` scratch writes. If a large `guest-requirements.txt` overflows it, raise the `truncate -s` size in `install_build.sh` and rebuild.
 - Alternative rootfs may have these binaries present, but python3.10 AWS Baseimage used in this repository doesn't.
 - The bootstrap takes the guest's address from the kernel cmdline (`guest_ip=` / `gateway=`, written per instance by `run_firecracker.sh`), falling back to `172.16.0.2/30` via `172.16.0.1` when they're absent. This is what lets concurrent microVMs each hold a distinct IP — **a rootfs built before this change will bring every guest up as `172.16.0.2`, so rebuild it before running more than one instance.**
 - The function drive is mounted read-only so a single `function.ext4` can be shared by every concurrent microVM (Lambda's `/var/task` is read-only anyway).
