@@ -13,7 +13,7 @@
 #   - aws-lambda-base-images/        (cloned repo with LFS objects pulled)
 #   - firecracker-<version>-<arch>.tgz
 #   - firecracker-<version>-<arch>.tgz.sha256.txt
-#   - /tmp/busybox
+#   - tmp/busybox
 #
 # Also writes ./build.env with the resolved version/arch values so that
 # parts 2 and 3 don't have to re-discover them.
@@ -83,6 +83,7 @@ else
 fi
 
 # ─── busybox (used by bootstrap wrapper inside the rootfs) ───────────────────
+mkdir -p "$TMP_DIR"
 if [[ -f "$BUSYBOX_PATH" ]]; then
   echo "Skipping busybox download, $BUSYBOX_PATH already exists."
 else

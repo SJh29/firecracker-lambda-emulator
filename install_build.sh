@@ -6,7 +6,7 @@
 #   - aws-lambda-base-images/        (or aws_baseimage.ext4 already built)
 #   - firecracker-<version>-<arch>.tgz
 #   - firecracker-<version>-<arch>.tgz.sha256.txt
-#   - /tmp/busybox
+#   - tmp/busybox
 #   - build.env                      (written by part 1)
 #
 # Produces:
@@ -101,7 +101,7 @@ else
   sudo mount -o loop "$IMG_PARTIAL" "$MOUNT_DIR"
 
   # Mount doesn't exist on AWS Linux; need it to mount task dir
-  sudo cp /tmp/busybox "$MOUNT_DIR/usr/bin/busybox"
+  sudo cp "$BUSYBOX_PATH" "$MOUNT_DIR/usr/bin/busybox"
   sudo chmod +x "$MOUNT_DIR/usr/bin/busybox"
   sudo cp "$OPENSSL_BIN" "$MOUNT_DIR/usr/bin/openssl"
   sudo chmod +x "$MOUNT_DIR/usr/bin/openssl"

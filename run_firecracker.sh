@@ -166,9 +166,17 @@ for (( k=0; k<NUM_INSTANCES; k++ )); do
     # so the quota applies to the VM process rather than to this launcher.
     (
         if (( CGROUP_OK )); then
+            # Capture the PID *before* any pipeline: inside `echo $BASHPID | ...`
+            # bash forks a child for the echo, so $BASHPID would expand to that
+            # child — which has already exited by the time tee writes, and the
+            # kernel rejects a dead PID with ESRCH ("No such process").
+            vm_pid=$BASHPID
             sudo mkdir -p "$CGROUP/vm$k"
-            echo "$CPU_MAX $CPU_PERIOD_US" | sudo tee "$CGROUP/vm$k/cpu.max" >/dev/null
-            echo $BASHPID | sudo tee "$CGROUP/vm$k/cgroup.procs" >/dev/null
+            echo "$CPU_MAX $CPU_PERIOD_US" | sudo tee "$CGROUP/vm$k/cpu.max" >/dev/null \
+                || warn "instance $k: could not set cpu.max — running without a CPU quota."
+            # Non-fatal: a VM outside its leaf cgroup is unmetered but still runs.
+            echo "$vm_pid" | sudo tee "$CGROUP/vm$k/cgroup.procs" >/dev/null \
+                || warn "instance $k: could not join $CGROUP/vm$k — running without a CPU quota."
         fi
         exec "$HERE/firecracker" \
             --api-sock "$SOCKET" \

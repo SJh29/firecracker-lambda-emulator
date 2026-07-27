@@ -15,9 +15,14 @@ LAMBDA_REPO_BRANCH="python3.10"
 LAMBDA_REPO_ARCH_DIR="x86_64"
 LAMBDA_API_URL="https://api.github.com/repos/aws/aws-lambda-base-images"
  
+# ─── Local scratch dir (git-ignored) ─────────────────────────────────────────
+# Downloads that aren't part of the repo but should live next to it rather than
+# in the system /tmp (which gets cleared between reboots).
+TMP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/tmp"
+
 # ─── busybox (injected into the guest rootfs) ────────────────────────────────
 BUSYBOX_URL="https://busybox.net/downloads/binaries/1.35.0-x86_64-linux-musl/busybox"
-BUSYBOX_PATH="/tmp/busybox"
+BUSYBOX_PATH="${TMP_DIR}/busybox"
 
 # ─── static OpenSSL binary ─────────────────────
 OPENSSL_URL="https://github.com/openssl/openssl/releases/download/openssl-3.5.7/openssl-3.5.7.tar.gz"

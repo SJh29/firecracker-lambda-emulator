@@ -33,3 +33,6 @@ NOTES.md
 commit.md
 graph*/
 function/package/
+
+# Local scratch downloads (busybox, etc.)
+tmp/
