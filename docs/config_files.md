@@ -30,7 +30,7 @@ Network constants and helper functions sourced by the operational scripts (`run_
 | Variable | Description | Default |
 |---|---|---|
 | `API_SOCKET_FOLDER` | Directory holding the per-instance API sockets (`<k>.socket`) | `/tmp/firecracker` |
-| `FC_RUN_DIR` | Directory holding the per-instance rootfs copies and generated configs | `<repo>/instances` |
+| `FC_RUN_DIR` | Directory holding the per-instance scratch drives and generated configs | `<repo>/instances` |
 | `LOGFILE` | Path for Firecracker log output | `./firecracker.log` |
 | `NET_PREFIX` | First three octets of the guest network | `172.16.0` |
 | `MASK_SHORT` | Subnet mask in CIDR notation for each TAP network | `/30` |
@@ -38,7 +38,7 @@ Network constants and helper functions sourced by the operational scripts (`run_
 | `LAMBDA_PORT` | Port the Lambda Runtime Interface Emulator listens on inside the guest | `8080` |
 | `TAP_DEV`, `TAP_IP`, `GUEST_IP`, `FC_MAC` | Back-compat aliases for instance 0 (`tap0`, `172.16.0.1`, `172.16.0.2`, `06:00:AC:10:00:02`) | — |
 
-Rootfs copies live beside the base image rather than under `/tmp`: `/tmp` is tmpfs on some hosts, and a 1 GiB copy per VM would come out of RAM. Keeping them on the same filesystem as the base image also lets `cp --reflink` make them nearly free.
+The rootfs and function drive are **not** per-instance — every VM mounts one shared copy read-only. The only per-instance disk is a small writable **scratch** drive (`scratch-<k>.ext4`) that the guest mounts at `/tmp`; it lives in `FC_RUN_DIR` and is freshly `mkfs`'d each launch. Keeping it out of `/tmp` on the host avoids paying for the copy out of tmpfs/RAM, and on btrfs `run_firecracker.sh` marks the directory `nodatacow` so the write-heavy path doesn't fragment or pay CoW/checksum overhead.
 
 ### Instance Addressing
 
@@ -48,7 +48,8 @@ Every host resource a VM owns is derived from its instance id, so no two instanc
 |---|---|---|---|
 | `fc_socket` | `fc_socket [k]` | `/tmp/firecracker/<k>.socket` | `/tmp/firecracker/0.socket` |
 | `fc_config` | `fc_config [k]` | `instances/vm_config-<k>.json` | `instances/vm_config-0.json` |
-| `fc_rootfs` | `fc_rootfs [k]` | `instances/rootfs-<k>.ext4` | `instances/rootfs-0.ext4` |
+| `fc_scratch` | `fc_scratch [k]` | `instances/scratch-<k>.ext4` (writable `/tmp` drive) | `instances/scratch-0.ext4` |
+| `fc_rootfs` | `fc_rootfs [k]` | `instances/rootfs-<k>.ext4` — used **only** by the reflink benchmark (`temp_reflink_setup.sh`); the main path shares one read-only rootfs | `instances/rootfs-0.ext4` |
 | `fc_tap` | `fc_tap [k]` | `tap<k>` | `tap0` |
 | `fc_host_ip` | `fc_host_ip [k]` | `172.16.0.<4k+1>` | `172.16.0.1` |
 | `fc_guest_ip` | `fc_guest_ip [k]` | `172.16.0.<4k+2>` | `172.16.0.2` |
@@ -92,7 +93,8 @@ The Firecracker VM configuration **template**. Edit this to change vCPU count, m
 | Placeholder | Replaced with | Example (`k=1`) |
 |---|---|---|
 | `@ROOT@` | Absolute path to the repo | `/home/ubuntu/tooling-setup` |
-| `@ROOTFS@` | That instance's private rootfs copy | `.../instances/rootfs-1.ext4` |
+| `@ROOTFS@` | The shared read-only base rootfs (same for every instance) | `.../aws_baseimage.ext4` |
+| `@SCRATCH@` | That instance's private writable `/tmp` scratch drive | `.../instances/scratch-1.ext4` |
 | `@TAP@` | That instance's TAP device | `tap1` |
 | `@MAC@` | That instance's guest MAC | `06:00:AC:10:00:06` |
 | `@GUEST_IP@` | That instance's guest IP | `172.16.0.6` |
@@ -127,8 +129,9 @@ The bootstrap parses `guest_ip` and `gateway` out of `/proc/cmdline`, falling ba
 
 | drive_id | `is_root_device` | `is_read_only` | Path | Description |
 |---|---|---|---|---|
-| `rootfs` | `true` | `false` | `@ROOTFS@` → `instances/rootfs-<k>.ext4` | Lambda runtime rootfs, mounted as `/dev/vda`. **Per-instance** — a private copy of `aws_baseimage.ext4`, because concurrent writes to one shared ext4 corrupt it |
+| `rootfs` | `true` | `true` | `@ROOTFS@` → `aws_baseimage.ext4` | Lambda runtime rootfs, mounted as `/dev/vda`. **Shared read-only** — one copy for all instances. Read-only is what makes sharing safe, and it forces all writable state onto `/tmp` (the scratch drive), matching real Lambda |
 | `function` | `false` | `true` | `function.ext4` | Function code drive, mounted at `/var/task` as `/dev/vdb`. **Shared** across all instances — read-only, as Lambda's task root is |
+| `scratch` | `false` | `false` | `@SCRATCH@` → `instances/scratch-<k>.ext4` | Writable scratch, mounted at `/tmp` as `/dev/vdc`. **Per-instance** — the guest's only writable path. Freshly `mkfs`'d each launch (`-S` sets the size, default 128 MiB); `nodatacow` on btrfs |
 
 ### `machine-config`
 

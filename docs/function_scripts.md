@@ -13,7 +13,7 @@ Every VM is identified by an integer **instance id** `k`, starting at 0. All of 
 | Resource | Instance `k` | Instance 0 | Instance 1 |
 |---|---|---|---|
 | API socket | `/tmp/firecracker/<k>.socket` | `/tmp/firecracker/0.socket` | `/tmp/firecracker/1.socket` |
-| Rootfs | `instances/rootfs-<k>.ext4` | `instances/rootfs-0.ext4` | `instances/rootfs-1.ext4` |
+| Scratch (`/tmp`) | `instances/scratch-<k>.ext4` | `instances/scratch-0.ext4` | `instances/scratch-1.ext4` |
 | Config | `instances/vm_config-<k>.json` | `instances/vm_config-0.json` | `instances/vm_config-1.json` |
 | TAP device | `tap<k>` | `tap0` | `tap1` |
 | Host IP | `172.16.0.<4k+1>` | `172.16.0.1` | `172.16.0.5` |
@@ -21,11 +21,21 @@ Every VM is identified by an integer **instance id** `k`, starting at 0. All of 
 | Guest MAC | `06:00:AC:10:00:<4k+2>` | `...:02` | `...:06` |
 | cgroup | `/sys/fs/cgroup/firecracker/vm<k>` | `.../vm0` | `.../vm1` |
 
-Each VM gets its **own point-to-point /30**, so the host routing table stays unambiguous, and its **own writable copy of the rootfs** — sharing one writable ext4 across VMs corrupts it. The function drive (`function.ext4`) *is* shared, because the guests mount it read-only, which is also how Lambda's `/var/task` behaves.
+**Drive layout — what's shared vs. per-instance:**
+
+| Drive | Guest mount | Sharing | Why |
+|---|---|---|---|
+| rootfs (`aws_baseimage.ext4`) | `/` | **one shared copy, read-only** | Read-only makes sharing safe and forces all writable state onto `/tmp`, exactly as real Lambda does |
+| function (`function.ext4`) | `/var/task` | **one shared copy, read-only** | Function code; Lambda's task root is read-only too |
+| scratch (`scratch-<k>.ext4`) | `/tmp` | **per-instance, writable** | The guest's only writable path. Fresh `mkfs` each launch, `nodatacow` on btrfs to keep the write-heavy path off CoW |
+
+Each VM also gets its **own point-to-point /30**, so the host routing table stays unambiguous. Nothing writable is shared, so concurrent VMs can't corrupt each other's disk.
 
 Instance 0 resolves to exactly the old single-VM values, so the previous setup is just the `k=0` case of this one. The last usable /30 is `172.16.0.252`, capping the design at **64 instances** (`k` = 0..63).
 
-The addressing helpers (`fc_socket`, `fc_tap`, `fc_host_ip`, `fc_guest_ip`, `fc_mac`, `fc_instances`) all live in [common.sh](../common.sh) — no script hardcodes these paths.
+The addressing helpers (`fc_socket`, `fc_scratch`, `fc_tap`, `fc_host_ip`, `fc_guest_ip`, `fc_mac`, `fc_instances`) all live in [common.sh](../common.sh) — no script hardcodes these paths.
+
+> A separate benchmark, [temp_reflink_setup.sh](../temp_reflink_setup.sh), instead gives each VM a `cp --reflink=auto` **writable** clone of the whole rootfs (`instances/rootfs-<k>.ext4`) and times create→first-invocation. It's the alternative this shared-rootfs + scratch layout was chosen over; keep it only for the comparison.
 
 ---
 
@@ -35,26 +45,30 @@ Starts one or more Firecracker microVMs, each bound to its own API socket and co
 
 **Requires:** `./firecracker` binary, `./vm_config.template.json`, `aws_baseimage.ext4`, `function.ext4`, `jq`.
 
-Run this in a dedicated terminal — it blocks until the VMs are stopped, and cleans up sockets, rootfs copies and TAP devices on exit (including Ctrl-C).
+Run this in a dedicated terminal — it blocks until the VMs are stopped, and cleans up sockets, scratch drives and TAP devices on exit (including Ctrl-C). The shared read-only rootfs is never touched.
 
 ```
-sudo ./run_firecracker.sh              # 1 VM
-sudo ./run_firecracker.sh -n 4         # 4 concurrent VMs
-sudo ./run_firecracker.sh -n 4 -m 1024 # 4 VMs, 1024 MiB each
+sudo ./run_firecracker.sh                    # 1 VM
+sudo ./run_firecracker.sh -n 4               # 4 concurrent VMs
+sudo ./run_firecracker.sh -n 4 -m 1024       # 4 VMs, 1024 MiB each
+sudo ./run_firecracker.sh -n 4 -S 256        # 4 VMs, 256 MiB /tmp each
 ```
 
 | Flag | Description | Default |
 |---|---|---|
 | `-n NUM_INSTANCES` | Number of concurrent microVMs (1–64) | `1` |
 | `-m MEM_MIB` | Guest memory per VM; also rewrites `func_mem_size` in the boot args | from template (`3538`) |
+| `-S SCRATCH_MB` | Size of each VM's writable `/tmp` scratch drive | `128` |
 
 **What it does, per instance:**
-1. Clones `aws_baseimage.ext4` → `instances/rootfs-<k>.ext4` (`cp --reflink=auto`, so it's a copy-on-write clone on btrfs/xfs and a hole-preserving copy elsewhere).
-2. Renders `vm_config.template.json` → `instances/vm_config-<k>.json`, substituting the rootfs path, TAP device, MAC, and the `guest_ip=`/`gateway=` kernel boot args.
+1. Creates a fresh `${SCRATCH_MB}` MiB ext4 scratch image → `instances/scratch-<k>.ext4` (`mkfs.ext4` each launch, so `/tmp` starts empty and identical every run). The rootfs is **not** copied — all instances share `aws_baseimage.ext4` read-only.
+2. Renders `vm_config.template.json` → `instances/vm_config-<k>.json`, substituting the scratch path, TAP device, MAC, and the `guest_ip=`/`gateway=` kernel boot args.
 3. Creates the leaf cgroup `/sys/fs/cgroup/firecracker/vm<k>` and enrolls that VM in it, so the CPU quota is per-instance rather than shared.
 4. Launches Firecracker on `/tmp/firecracker/<k>.socket`.
 
-It also invokes `setup_tap.sh -n N` first, and warns if `2 × N` exceeds the host CPU count (contended VMs make the power numbers meaningless).
+It also invokes `setup_tap.sh -n N` first, marks the scratch directory `nodatacow` on btrfs, and warns if `2 × N` exceeds the host CPU count (contended VMs make the power numbers meaningless).
+
+> If a payload can write more than `-S` MiB to `/tmp` in one invocation, the guest hits `ENOSPC` mid-run — raise `-S`. The chacha20 default writes ~16 MiB, well under 128.
 
 > **CPU quota is off by default.** `cpu.max` is written as `max <period>`. Set `CPU_MAX=$CPU_QUOTA_US` (or export `CPU_MAX`) to enable the memory-proportional quota of 1 vCPU per 1769 MB.
 
@@ -121,13 +135,13 @@ With `-a` the instances are fired simultaneously (not one after another), so the
 
 Cleanly stops **all** running Firecracker microVMs.
 
-Discovers the running instances from the sockets on disk (rather than being told how many there are), sends each a `SendCtrlAltDel`, then force-kills any VMM still alive 3 seconds later — a guest that ignores Ctrl-Alt-Del would otherwise keep its rootfs and TAP pinned and poison the next launch. Finally it removes the sockets, the TAP devices, and the per-instance rootfs copies and configs.
+Discovers the running instances from the sockets on disk (rather than being told how many there are), sends each a `SendCtrlAltDel`, then force-kills any VMM still alive 3 seconds later — a guest that ignores Ctrl-Alt-Del would otherwise keep its scratch drive and TAP pinned and poison the next launch. Finally it removes the sockets, the TAP devices, and the per-instance scratch drives and configs. The shared read-only rootfs and function drive are left untouched.
 
 If no sockets are found, falls back to `pkill` on the Firecracker process.
 
 | Flag | Description |
 |---|---|
-| `-k` | Keep the per-instance rootfs copies and configs (for post-mortem) |
+| `-k` | Keep the per-instance scratch drives and configs (for post-mortem) |
 
 ```
 sudo ./kill_firecracker.sh

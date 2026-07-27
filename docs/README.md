@@ -47,7 +47,8 @@ sleep 2
 sudo ./kill_firecracker.sh
 
 # ── 2b. Same thing, 4 concurrent microVMs ──────────────────────────────────
-# Each VM gets its own socket, rootfs copy, tap<k>, MAC and guest IP.
+# Shared read-only rootfs; each VM gets its own socket, /tmp scratch drive,
+# tap<k>, MAC and guest IP. -S sets the per-VM /tmp size (MiB).
 sudo ./run_firecracker.sh -n 4 &
 sleep 3
 ./function_scripts/invoke.sh -a     # fires all 4 in parallel
@@ -94,6 +95,6 @@ tar -czvf all_exp.tar.gz experiment_*
 
 # Concurrency
 
-Instance `k` owns `/tmp/firecracker/<k>.socket`, `instances/rootfs-<k>.ext4`, `tap<k>`, host IP `172.16.0.<4k+1>` and guest IP `172.16.0.<4k+2>`. Instance 0 is exactly the old single-VM setup. See [Function Setup Scripts](./function_scripts.md#concurrency-model) for the full table.
+Instance `k` owns `/tmp/firecracker/<k>.socket`, a writable `/tmp` scratch drive `instances/scratch-<k>.ext4`, `tap<k>`, host IP `172.16.0.<4k+1>` and guest IP `172.16.0.<4k+2>`. The rootfs and function drive are shared read-only. Instance 0 is exactly the old single-VM setup. See [Function Setup Scripts](./function_scripts.md#concurrency-model) for the full table.
 
 > **The rootfs must be rebuilt** (`./install_build.sh`) to pick up the guest bootstrap that reads its IP from the kernel cmdline. Without it, every guest still comes up as `172.16.0.2` and only instance 0 is reachable.
