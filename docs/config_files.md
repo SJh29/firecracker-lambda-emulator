@@ -16,7 +16,8 @@ Static configuration sourced by all three install scripts. Edit this file to cha
 | `LAMBDA_REPO_ARCH_DIR` | Subdirectory within the repo that holds architecture-specific layer tarballs | `x86_64` |
 | `LAMBDA_API_URL` | GitHub API base URL used as fallback when `git lfs pull` produces pointer stubs | `https://api.github.com/repos/aws/aws-lambda-base-images` |
 | `BUSYBOX_URL` | URL for the static busybox binary injected into the guest rootfs | `https://busybox.net/downloads/binaries/1.35.0-x86_64-linux-musl/busybox` |
-| `BUSYBOX_PATH` | Destination path for the downloaded busybox binary on the host | `/tmp/busybox` |
+| `TMP_DIR` | Repo-local scratch directory for downloads that aren't checked in (git-ignored) | `<repo>/tmp` |
+| `BUSYBOX_PATH` | Destination path for the downloaded busybox binary on the host | `${TMP_DIR}/busybox` |
 | `ROOTFS_IMAGE` | Filename of the ext4 rootfs image produced by `install_build.sh` | `aws_baseimage.ext4` |
 
 ---

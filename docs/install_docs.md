@@ -38,7 +38,7 @@ Downloads all binary artifacts needed to build the microVM environment.
 | `aws-lambda-base-images/` | Cloned Lambda base image repo with LFS objects pulled |
 | `firecracker-<version>-<arch>.tgz` | Firecracker release archive |
 | `firecracker-<version>-<arch>.tgz.sha256.txt` | Checksum file for the archive |
-| `/tmp/busybox` | Static busybox binary injected into the guest rootfs |
+| `tmp/busybox` | Static busybox binary injected into the guest rootfs (repo-local, git-ignored) |
 | `build.env` | Resolved `ARCH`, `LATEST_VERSION`, `CI_VERSION`, and `KERNEL_FILENAME` for use by parts 2 and 3 |
 
 **Notes:**
@@ -53,7 +53,7 @@ Downloads all binary artifacts needed to build the microVM environment.
 
 Builds the rootfs image from the downloaded Lambda base image layers and extracts the Firecracker binaries.
 
-**Requires:** `aws-lambda-base-images/` (or a pre-built `aws_baseimage.ext4`), Firecracker archive + checksum, `/tmp/busybox`, and `build.env` — all produced by `install_download.sh`.
+**Requires:** `aws-lambda-base-images/` (or a pre-built `aws_baseimage.ext4`), Firecracker archive + checksum, `tmp/busybox`, and `build.env` — all produced by `install_download.sh`.
 
 **Produces:**
 
