@@ -62,7 +62,7 @@ else
   cleanup_rootfs_build() {
     [[ -n "$MOUNT_DIR" && -d "$MOUNT_DIR" ]] && {
       sudo umount "$MOUNT_DIR" 2>/dev/null || true
-      sudo rmdir  "$MOUNT_DIR" 2>/dev/null || true
+      sudo rmdir "$MOUNT_DIR" 2>/dev/null || true
     }
     [[ -f "$IMG_PARTIAL" ]] && sudo rm -f "$IMG_PARTIAL"
   }
@@ -119,7 +119,7 @@ else
     "$MOUNT_DIR/lambda-entrypoint.sh"
 
   # Write wrapper: mounts pseudo-fs, sets env, mounts function drive, starts RIE
-  sudo tee "$MOUNT_DIR/var/runtime/bootstrap" > /dev/null << 'WRAPPER'
+  sudo tee "$MOUNT_DIR/var/runtime/bootstrap" >/dev/null <<'WRAPPER'
 #!/bin/bash
 
 # ── Pseudo-filesystems ──
@@ -192,21 +192,25 @@ WRAPPER
       echo "Installing guest Python deps via the image's own pip (chroot)..."
       sudo cp "$GUEST_REQS" "$MOUNT_DIR/tmp/guest-requirements.txt"
       # pip needs DNS + /dev/urandom + /proc inside the chroot.
-      [[ -s "$MOUNT_DIR/etc/resolv.conf" ]] || \
+      [[ -s "$MOUNT_DIR/etc/resolv.conf" ]] ||
         echo "nameserver 8.8.8.8" | sudo tee "$MOUNT_DIR/etc/resolv.conf" >/dev/null
-      sudo mount --bind /dev  "$MOUNT_DIR/dev"
+      sudo mount --bind /dev "$MOUNT_DIR/dev"
       sudo mount --bind /proc "$MOUNT_DIR/proc"
-      sudo mount --bind /sys  "$MOUNT_DIR/sys"
+      sudo mount --bind /sys "$MOUNT_DIR/sys"
       pip_rc=0
       sudo chroot "$MOUNT_DIR" /var/lang/bin/pip install \
         --no-cache-dir --no-input --disable-pip-version-check \
+        --only-binary=:all: \
         -r /tmp/guest-requirements.txt || pip_rc=$?
       # Always undo the bind mounts before the rootfs umount, even on failure.
-      sudo umount "$MOUNT_DIR/sys"  || true
+      sudo umount "$MOUNT_DIR/sys" || true
       sudo umount "$MOUNT_DIR/proc" || true
-      sudo umount "$MOUNT_DIR/dev"  || true
+      sudo umount "$MOUNT_DIR/dev" || true
       sudo rm -f "$MOUNT_DIR/tmp/guest-requirements.txt"
-      (( pip_rc == 0 )) || { echo "ERROR: guest pip install failed (rc=$pip_rc)" >&2; exit 1; }
+      ((pip_rc == 0)) || {
+        echo "ERROR: guest pip install failed (rc=$pip_rc)" >&2
+        exit 1
+      }
       echo "Guest deps installed: $(tr '\n' ' ' <"$GUEST_REQS")"
     else
       echo "WARNING: /var/lang/bin/pip not found in rootfs — skipping guest deps." >&2
@@ -286,7 +290,6 @@ else
   mv "${folder}/jailer-${LATEST_VERSION}-${ARCH}" jailer
   echo "jailer binary renamed to 'jailer'"
 fi
-
 
 echo
 echo "Build stage complete."
