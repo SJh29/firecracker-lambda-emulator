@@ -1,16 +1,19 @@
 #!/bin/bash
 # run_firecracker.sh — must be run with sudo (Firecracker needs root for /dev/kvm)
 #
-# Usage: sudo ./run_firecracker.sh [-m MEM_MIB] [-n NUM_INSTANCES]
+# Usage: sudo ./run_firecracker.sh [-m MEM_MIB] [-n NUM_INSTANCES] [-S SCRATCH_MB]
 #   -m MEM_MIB        Override guest memory (MiB). Also updates func_mem_size in
 #                     boot_args so the guest init agrees with machine-config.
 #   -n NUM_INSTANCES  Number of concurrent microVMs (default 1). Each gets its
-#                     own socket, rootfs copy, TAP device, MAC and guest IP —
+#                     own socket, scratch drive, TAP device, MAC and guest IP —
 #                     see the addressing table in common.sh.
+#   -S SCRATCH_MB     Size of each VM's writable /tmp scratch drive (default 128).
 #
-# Every instance is fully isolated on the host: sharing one writable rootfs or
-# one TAP across VMs corrupts the filesystem and blackholes the network, so each
-# VM boots its own copy of the base image on its own point-to-point /30.
+# The rootfs and function drive are shared read-only across all instances — one
+# copy, mounted read-only, so concurrent VMs can't corrupt them. The only
+# per-instance writable surface is a small scratch drive mounted at /tmp in the
+# guest (freshly mkfs'd, nodatacow on btrfs). Networking is isolated too: one
+# TAP per VM on its own point-to-point /30.
 set -e
 
 # Resolve project root from the script's own location. Works under sudo because
@@ -21,13 +24,18 @@ source "$HERE/config.sh"
 
 MEM_OVERRIDE=""
 NUM_INSTANCES=1
-while getopts "m:n:h" opt; do
+SCRATCH_MB=128
+while getopts "m:n:S:h" opt; do
     case $opt in
         m) MEM_OVERRIDE=$OPTARG ;;
         n) NUM_INSTANCES=$OPTARG ;;
-        h) sed -n 's/^# \?//p' "$0" | head -n 12; exit 0 ;;
+        S) SCRATCH_MB=$OPTARG ;;
+        h) sed -n 's/^# \?//p' "$0" | head -n 14; exit 0 ;;
     esac
 done
+
+[[ "$SCRATCH_MB" =~ ^[0-9]+$ ]] && (( SCRATCH_MB >= 1 )) \
+    || { error "-S must be a positive integer (got '$SCRATCH_MB')"; exit 1; }
 
 [[ "$NUM_INSTANCES" =~ ^[0-9]+$ ]] && (( NUM_INSTANCES >= 1 )) \
     || { error "-n must be a positive integer (got '$NUM_INSTANCES')"; exit 1; }
@@ -45,9 +53,16 @@ if (( NUM_INSTANCES * 2 > NPROC )); then
 fi
 
 # Clean any stale sockets (Firecracker refuses to start if a socket already
-# exists) and any rootfs copies left behind by a previous run.
+# exists) and any scratch drives left behind by a previous run.
 sudo rm -rf "$API_SOCKET_FOLDER" "$FC_RUN_DIR"
 sudo mkdir -p "$API_SOCKET_FOLDER" "$FC_RUN_DIR"
+
+# On btrfs, mark the scratch dir nodatacow so the write-heavy /tmp images don't
+# fragment or pay per-write checksum/CoW overhead — that overhead lands in host
+# package power (RAPL/turbostat) and would contaminate the measurement. chattr
+# +C only takes effect on files created afterward, so it must precede the mkfs
+# below. No-op on filesystems without CoW.
+command -v chattr &>/dev/null && sudo chattr +C "$FC_RUN_DIR" 2>/dev/null || true
 
 # ── Host networking ─────────────────────────────────────────────────────────
 # One TAP per instance. Idempotent, so re-running is safe.
@@ -95,22 +110,26 @@ fi
     && echo "Firecracker cgroup: $CGROUP/vm<k>  cpu.max=$CPU_MAX $CPU_PERIOD_US  (MEM=${MEM_MIB} MiB, vcpu=${VCPU_COUNT})" \
     || echo "Firecracker cgroup: disabled  (MEM=${MEM_MIB} MiB, vcpu=${VCPU_COUNT})"
 
-# ── Build the per-instance configs ──────────────────────────────────────────
+# ── Build the per-instance scratch drives and configs ───────────────────────
+# All instances share $BASE_ROOTFS read-only, so there is nothing to clone —
+# the only per-instance disk is a small, freshly formatted scratch image that
+# the guest mounts at /tmp. mkfs each launch keeps it deterministic (same empty
+# filesystem every run) instead of accumulating divergence across runs.
 for (( k=0; k<NUM_INSTANCES; k++ )); do
-    rootfs="$(fc_rootfs "$k")"
+    scratch="$(fc_scratch "$k")"
     config="$(fc_config "$k")"
 
-    # Private writable rootfs. --reflink=auto is a copy-on-write clone on
-    # btrfs/xfs and falls back to a normal (hole-preserving) copy elsewhere.
-    log "instance $k: cloning rootfs → $rootfs"
-    sudo cp --reflink=auto --sparse=auto "$BASE_ROOTFS" "$rootfs"
+    log "instance $k: creating ${SCRATCH_MB}MiB scratch → $scratch"
+    sudo truncate -s "${SCRATCH_MB}M" "$scratch"
+    sudo mkfs.ext4 -F -q -m 0 "$scratch"
 
     # Render the template, then apply memory/vcpu in the same pipeline: bump
     # mem_size_mib, the matching func_mem_size kernel arg, and vcpu_count so the
     # guest can use the whole quota. Piping into `sudo tee` keeps the write to
     # the (root-owned) run dir from depending on this shell's own privileges.
     sed -e "s|@ROOT@|$HERE|g" \
-        -e "s|@ROOTFS@|$rootfs|g" \
+        -e "s|@ROOTFS@|$BASE_ROOTFS|g" \
+        -e "s|@SCRATCH@|$scratch|g" \
         -e "s|@TAP@|$(fc_tap "$k")|g" \
         -e "s|@MAC@|$(fc_mac "$k")|g" \
         -e "s|@GUEST_IP@|$(fc_guest_ip "$k")|g" \

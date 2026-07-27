@@ -84,9 +84,10 @@ else
   # Create ext4 filesystem image
   echo "Creating ext4 image..."
   sudo chown -R root:root lambda-rootfs
-  # 1.5G leaves headroom for guest-vendored deps (igraph + bundled libs) and the
-  # function's /tmp scratch writes. The file is sparse and the rootfs clones are
-  # copy-on-write, so a larger size costs almost nothing on disk.
+  # 1.5G leaves headroom for guest-vendored deps (igraph + bundled libs). The
+  # function's /tmp writes no longer land here — they go to a per-instance
+  # scratch drive — but the file is sparse, so a larger size costs almost
+  # nothing on disk, and one read-only copy is shared by every microVM.
   sudo truncate -s 1536M "$IMG_PARTIAL"
   sudo mkfs.ext4 -d lambda-rootfs -F "$IMG_PARTIAL"
 
@@ -144,6 +145,12 @@ export AWS_LAMBDA_FUNCTION_TIMEOUT=$TIMEOUT
 export AWS_LAMBDA_FUNCTION_MEMORY_SIZE=$MEM_SIZE
 export CONFIG_VIRT_CPU_ACCOUNTING_GEN=y
 export CONFIG_IRQ_TIME_ACCOUNTING=y
+# The rootfs is mounted read-only (shared across all concurrent microVMs), so
+# stop Python from trying to write __pycache__ next to modules in /var/runtime
+# and /var/task — those writes would hit EROFS. Tolerated, but each is a wasted
+# open() per import and forces a recompile every cold start, which is noise for
+# the power measurement.
+export PYTHONDONTWRITEBYTECODE=1
 # ── Mount function drive ──
 # The function drive is shared read-only across all concurrent microVMs (and
 # Lambda's /var/task is read-only anyway), so mount it ro.
@@ -155,6 +162,20 @@ else
     echo "ERROR: Failed to mount /dev/vdb at /var/task"
     echo "Available block devices:"
     ls -la /dev/vd* /dev/sd* /dev/xvd* 2>/dev/null
+fi
+
+# ── Mount writable scratch drive at /tmp ──
+# The rootfs is read-only, so the guest's only writable path is this per-instance
+# scratch drive (/dev/vdc, freshly mkfs'd by run_firecracker.sh). The function
+# writes its ~8 MB cleartext/ciphertext here, matching real Lambda where /tmp is
+# the sole writable location. Mounted before the RIE starts so the runtime and
+# the handler both see a writable /tmp.
+/usr/bin/busybox mount /dev/vdc /tmp
+if [ $? -eq 0 ]; then
+    echo "Mounted /dev/vdc at /tmp (rw)"
+else
+    echo "ERROR: Failed to mount /dev/vdc at /tmp — /tmp writes will fail (read-only root)"
+    ls -la /dev/vd* 2>/dev/null
 fi
 
 # ── Configure guest network ──

@@ -3,11 +3,12 @@
 #
 # Discovers the running instances from the sockets on disk (rather than being
 # told how many there are), sends each one a graceful shutdown, then removes the
-# host-side resources they owned: sockets, per-instance rootfs copies, generated
-# configs, and TAP devices.
+# host-side resources they owned: sockets, per-instance scratch drives, generated
+# configs, and TAP devices. The shared read-only rootfs and function drive are
+# left untouched.
 #
 # Usage: sudo ./kill_firecracker.sh [-k]
-#   -k   Keep the per-instance rootfs copies and configs (for post-mortem).
+#   -k   Keep the per-instance scratch drives and configs (for post-mortem).
 
 set -e
 HERE="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"

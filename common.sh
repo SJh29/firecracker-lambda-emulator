@@ -7,14 +7,21 @@
 #
 #   socket    /tmp/firecracker/<k>.socket
 #   config    <repo>/instances/vm_config-<k>.json
-#   rootfs    <repo>/instances/rootfs-<k>.ext4   (private copy of the base image)
+#   scratch   <repo>/instances/scratch-<k>.ext4  (private writable /tmp drive)
 #   tap dev   tap<k>
 #   subnet    172.16.0.<4k>/30  →  host 172.16.0.<4k+1>, guest 172.16.0.<4k+2>
 #   guest MAC 06:00:AC:10:00:<4k+2>   (last 4 octets encode the guest IP)
 #
-# Rootfs copies live beside the base image rather than under /tmp: /tmp is tmpfs
-# on some hosts, and a 1 GiB copy per VM would come out of RAM. Keeping them on
-# the same filesystem as the base image also lets cp --reflink make them free.
+# The rootfs (aws_baseimage.ext4) and the function drive (function.ext4) are
+# NOT per-instance: every VM mounts them read-only and shares one copy. Only
+# writable state is per-instance — a small scratch drive mounted at /tmp inside
+# the guest. This keeps the write-heavy path off any shared file (so no ext4
+# corruption) and, on btrfs, off the copy-on-write path (fresh mkfs, nodatacow),
+# so repeated writes don't fragment a reflinked image and skew measurements.
+#
+# scratch drives live in FC_RUN_DIR beside the base image. fc_rootfs() is kept
+# for the reflink benchmark (temp_reflink_setup.sh), which clones the rootfs
+# per instance instead of sharing it — the alternative this layout replaced.
 #
 # One /30 per VM gives each guest its own point-to-point link to the host, so
 # the host routing table stays unambiguous. Instance 0 resolves to the original
@@ -35,13 +42,14 @@ RUNTIME_SCRIPT="lambda_runtime.py"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Per-instance rootfs copies and generated configs.
+# Per-instance scratch drives and generated configs.
 FC_RUN_DIR="${FC_RUN_DIR:-$SCRIPT_DIR/instances}"
 
 # Per-instance resource names. Each takes an instance id (default 0).
 fc_socket()   { echo "$API_SOCKET_FOLDER/${1:-0}.socket"; }
 fc_config()   { echo "$FC_RUN_DIR/vm_config-${1:-0}.json"; }
-fc_rootfs()   { echo "$FC_RUN_DIR/rootfs-${1:-0}.ext4"; }
+fc_scratch()  { echo "$FC_RUN_DIR/scratch-${1:-0}.ext4"; }
+fc_rootfs()   { echo "$FC_RUN_DIR/rootfs-${1:-0}.ext4"; }  # reflink benchmark only
 fc_tap()      { echo "tap${1:-0}"; }
 fc_host_ip()  { echo "$NET_PREFIX.$(( 4 * ${1:-0} + 1 ))"; }
 fc_guest_ip() { echo "$NET_PREFIX.$(( 4 * ${1:-0} + 2 ))"; }

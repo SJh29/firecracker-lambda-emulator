@@ -11,7 +11,7 @@
             "partuuid": null,
             "is_root_device": true,
             "cache_type":"Unsafe",
-            "is_read_only": false,
+            "is_read_only": true,
             "path_on_host": "@ROOTFS@",
             "io_engine": "Sync",
             "rate_limiter": null,
@@ -24,6 +24,17 @@
             "is_root_device" : false,
             "is_read_only" : true,
             "path_on_host": "@ROOT@/function.ext4",
+            "io_engine" : "Sync",
+            "rate_limiter":null,
+            "socket":null
+        },
+
+        {
+            "drive_id" : "scratch",
+            "partuuid" : null,
+            "is_root_device" : false,
+            "is_read_only" : false,
+            "path_on_host": "@SCRATCH@",
             "io_engine" : "Sync",
             "rate_limiter":null,
             "socket":null
