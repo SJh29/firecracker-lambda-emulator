@@ -113,7 +113,7 @@ The Firecracker VM configuration **template**. Edit this to change vCPU count, m
 
 | Parameter | Description |
 |---|---|
-| `console=ttyS0` | Route kernel console output to the first serial port |
+| `console=ttyS0` | Route kernel console output to the first serial port. Firecracker forwards that port to its own stdout, which `run_firecracker.sh` redirects to `logs/<timestamp>/console-<k>.log`. Since PID 1 is the bootstrap wrapper, it inherits this console, so the wrapper's output and the Lambda RIE's `START`/`END`/`REPORT` lines end up in the same file |
 | `reboot=k`, `panic=1` | On panic, print a message and halt rather than rebooting |
 | `init=/var/runtime/bootstrap` | Use the injected bootstrap wrapper as PID 1 |
 | `handler=function.handler` | Lambda handler passed via `/proc/cmdline` to the bootstrap |

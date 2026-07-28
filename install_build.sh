@@ -14,14 +14,20 @@
 #                                     and guest-requirements.txt deps vendored in)
 #   - release-<version>-<arch>/      (extracted Firecracker archive)
 #   - ./firecracker, ./jailer        (renamed binaries in current dir)
+#
+# Every stage is skipped if its output already exists, so the script is safe to
+# re-run; delete the artefact to force a rebuild.
 
 set -euo pipefail
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/config.sh"
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/build.env"
-# Build OpenSSL Static Binary at $OPENSSL_BIN (= $OPENSSL_SRC_DIR/apps/openssl).
-# All paths are absolute so the build never depends on (or pollutes) the cwd,
-# which must stay the repo root for the rootfs build below.
+
+# ─── Static OpenSSL binary ───────────────────────────────────────────────────
+# The chacha20 benchmark shells out to openssl in the guest, which has none. A
+# static build drops into the rootfs as a single file with no library trail.
+# Paths are absolute so the build never depends on (or pollutes) the cwd, which
+# must stay the repo root for the rootfs build below.
 if [[ -f "$OPENSSL_BIN" ]]; then
   echo "Static OpenSSL binary already built at $OPENSSL_BIN, skipping..."
 else
@@ -31,15 +37,15 @@ else
   else
     echo "Source tarball already exists: $OPENSSL_TARBALL, skipping download..."
   fi
-  # Extract the source tree directly into $OPENSSL_SRC_DIR (strip the top-level
-  # openssl-3.5.7/ component) so the build dir is exactly $OPENSSL_SRC_DIR.
+  # --strip-components drops the top-level openssl-3.5.7/ so the build dir is
+  # exactly $OPENSSL_SRC_DIR.
   if [[ ! -d "$OPENSSL_SRC_DIR" ]]; then
     mkdir -p "$OPENSSL_SRC_DIR"
     tar xzf "$OPENSSL_TARBALL" -C "$OPENSSL_SRC_DIR" --strip-components=1
   else
     echo "Source directory already exists: $OPENSSL_SRC_DIR, skipping extraction..."
   fi
-  # Build in a subshell so the cd doesn't leak into the rest of the script.
+  # Subshell so the cd doesn't leak into the rest of the script.
   (
     cd "$OPENSSL_SRC_DIR"
     ./Configure no-shared no-dso -static linux-x86_64
@@ -47,16 +53,19 @@ else
   )
   echo "Static OpenSSL binary built at: $OPENSSL_BIN"
 fi
+
 # ─── Build AWS Lambda base image rootfs ──────────────────────────────────────
+# Built as $ROOTFS_IMAGE.partial and promoted only once the wrapper is injected,
+# so a failure part-way through leaves no $ROOTFS_IMAGE behind and the next run
+# rebuilds instead of silently booting a half-built, unbootable image.
+#
+# The staging tree and the source repo are each deleted as soon as they're
+# consumed — all three together are several GB.
 if [[ -f "$ROOTFS_IMAGE" ]]; then
   echo "Skipping rootfs build, already exists: $ROOTFS_IMAGE"
 else
   echo "Building AWS Lambda base image rootfs..."
 
-  # Build into a partial file and only promote it to $ROOTFS_IMAGE once the
-  # wrapper is fully injected. A failure mid-build (e.g. a missing file in the
-  # cp steps below) then leaves no $ROOTFS_IMAGE behind, so the next run rebuilds
-  # instead of silently booting a half-built, unbootable image.
   IMG_PARTIAL="${ROOTFS_IMAGE}.partial"
   MOUNT_DIR=""
   cleanup_rootfs_build() {
@@ -68,7 +77,6 @@ else
   }
   trap cleanup_rootfs_build EXIT
 
-  # Extract all tar.xz layers into staging directory
   if [[ ! -d "lambda-rootfs" ]]; then
     mkdir -p lambda-rootfs
     for tarfile in aws-lambda-base-images/x86_64/*.tar.xz; do
@@ -77,63 +85,73 @@ else
     done
   fi
 
-  # Clean up cloned repo to free space before image creation
   echo "Cleaning up source files..."
   sudo rm -rf aws-lambda-base-images
 
-  # Create ext4 filesystem image
   echo "Creating ext4 image..."
   sudo chown -R root:root lambda-rootfs
-  # 1.5G leaves headroom for guest-vendored deps (igraph + bundled libs). The
-  # function's /tmp writes no longer land here — they go to a per-instance
-  # scratch drive — but the file is sparse, so a larger size costs almost
-  # nothing on disk, and one read-only copy is shared by every microVM.
+  # 1.5G leaves headroom for the vendored guest deps (igraph + bundled libs).
+  # The function's /tmp writes land on a per-instance scratch drive rather than
+  # here, and the file is sparse, so the extra size costs almost nothing — one
+  # read-only copy is shared by every microVM.
   sudo truncate -s 1536M "$IMG_PARTIAL"
   sudo mkfs.ext4 -d lambda-rootfs -F "$IMG_PARTIAL"
 
-  # Clean up extracted rootfs
   echo "Cleaning up extracted rootfs..."
   sudo rm -rf lambda-rootfs
 
-  # Inject bootstrap wrapper into rootfs (single mount operation)
+  # Everything below happens under a single loop mount, held until the deps are
+  # vendored in.
   echo "Injecting bootstrap wrapper into rootfs..."
   MOUNT_DIR="$(mktemp -d)"
   sudo mount -o loop "$IMG_PARTIAL" "$MOUNT_DIR"
 
-  # Mount doesn't exist on AWS Linux; need it to mount task dir
+  # The AWS base image ships neither mount(8) (needed for the drives the wrapper
+  # mounts) nor openssl (needed by the chacha20 benchmark).
   sudo cp "$BUSYBOX_PATH" "$MOUNT_DIR/usr/bin/busybox"
   sudo chmod +x "$MOUNT_DIR/usr/bin/busybox"
   sudo cp "$OPENSSL_BIN" "$MOUNT_DIR/usr/bin/openssl"
   sudo chmod +x "$MOUNT_DIR/usr/bin/openssl"
-  # Ensure /var/task exists as a mount point
   sudo mkdir -p "$MOUNT_DIR/var/task"
 
-  # Bake the resolver into the image. The nameserver is constant (only the guest
-  # IP/gateway vary per instance, and those come from the kernel cmdline), so
-  # there's no reason to write resolv.conf at runtime — doing it here means the
-  # rootfs can be mounted read-only without the bootstrap hitting EROFS.
+  # Baked in at build time rather than written at boot: the nameserver is
+  # constant (only guest IP/gateway vary, and those come from the kernel
+  # cmdline), and this way the rootfs can be mounted read-only.
   echo "nameserver 8.8.8.8" | sudo tee "$MOUNT_DIR/etc/resolv.conf" >/dev/null
 
-  # Move the real bootstrap aside
+  # ─── Guest bootstrap wrapper ───────────────────────────────────────────────
+  # The wrapper takes over /var/runtime/bootstrap as the guest's PID 1; the
+  # image's own bootstrap moves aside to bootstrap.real, and lambda-entrypoint
+  # is repointed at it so the wrapper can hand off once the guest is set up.
   sudo mv "$MOUNT_DIR/var/runtime/bootstrap" "$MOUNT_DIR/var/runtime/bootstrap.real"
   sudo sed -i 's|RUNTIME_ENTRYPOINT=/var/runtime/bootstrap|RUNTIME_ENTRYPOINT=/var/runtime/bootstrap.real|' \
     "$MOUNT_DIR/lambda-entrypoint.sh"
 
-  # Write wrapper: mounts pseudo-fs, sets env, mounts function drive, starts RIE
   sudo tee "$MOUNT_DIR/var/runtime/bootstrap" >/dev/null <<'WRAPPER'
 #!/bin/bash
+# Guest PID 1. Does the work Docker would normally do for a Lambda image —
+# pseudo-filesystems, environment, drives, network — then execs the real Lambda
+# entrypoint.
+#
+# The rootfs and the function drive are shared read-only by every concurrent
+# microVM, so nothing here may write outside /tmp, which is this instance's own
+# scratch drive. Per-VM values (IP, gateway, memory, handler) arrive on the
+# kernel cmdline, written per instance by run_firecracker.sh.
+#
+# As PID 1 this inherits /dev/console, so everything echoed below lands in that
+# instance's console log on the host.
 
 # ── Pseudo-filesystems ──
-# /proc must come first (needed for /proc/cmdline)
+# /proc first: everything after it reads /proc/cmdline.
 /usr/bin/busybox mount -t proc proc /proc
 /usr/bin/busybox mount -t sysfs sysfs /sys
 
 # devtmpfs may already be mounted by the kernel; remount to ensure /dev is populated
 /usr/bin/busybox mount -t devtmpfs devtmpfs /dev 2>/dev/null
 
-# Initialize commandline values
 MEM_SIZE=$(grep -oP 'func_mem_size=\K\S+' /proc/cmdline || echo "128")
 TIMEOUT=$(grep -oP 'func_timeout=\K\S+' /proc/cmdline || echo "300")
+
 # ── Environment (normally set by Docker ENV) ──
 export LANG=en_US.UTF-8
 export TZ=:/etc/localtime
@@ -145,15 +163,15 @@ export AWS_LAMBDA_FUNCTION_TIMEOUT=$TIMEOUT
 export AWS_LAMBDA_FUNCTION_MEMORY_SIZE=$MEM_SIZE
 export CONFIG_VIRT_CPU_ACCOUNTING_GEN=y
 export CONFIG_IRQ_TIME_ACCOUNTING=y
-# The rootfs is mounted read-only (shared across all concurrent microVMs), so
-# stop Python from trying to write __pycache__ next to modules in /var/runtime
-# and /var/task — those writes would hit EROFS. Tolerated, but each is a wasted
-# open() per import and forces a recompile every cold start, which is noise for
+# __pycache__ writes next to modules would hit EROFS. Harmless, but each is a
+# wasted open() per import and forces a recompile every cold start — noise in
 # the power measurement.
 export PYTHONDONTWRITEBYTECODE=1
-# ── Mount function drive ──
-# The function drive is shared read-only across all concurrent microVMs (and
-# Lambda's /var/task is read-only anyway), so mount it ro.
+
+# ── Drives ──
+# /var/task read-only (shared, and read-only on real Lambda anyway); /tmp is the
+# only writable path in the guest, and must be mounted before the RIE starts so
+# the runtime and the handler both see it.
 mkdir -p /var/task
 /usr/bin/busybox mount -o ro /dev/vdb /var/task
 if [ $? -eq 0 ]; then
@@ -164,12 +182,6 @@ else
     ls -la /dev/vd* /dev/sd* /dev/xvd* 2>/dev/null
 fi
 
-# ── Mount writable scratch drive at /tmp ──
-# The rootfs is read-only, so the guest's only writable path is this per-instance
-# scratch drive (/dev/vdc, freshly mkfs'd by run_firecracker.sh). The function
-# writes its ~8 MB cleartext/ciphertext here, matching real Lambda where /tmp is
-# the sole writable location. Mounted before the RIE starts so the runtime and
-# the handler both see a writable /tmp.
 /usr/bin/busybox mount /dev/vdc /tmp
 if [ $? -eq 0 ]; then
     echo "Mounted /dev/vdc at /tmp (rw)"
@@ -178,35 +190,28 @@ else
     ls -la /dev/vd* 2>/dev/null
 fi
 
-# ── Configure guest network ──
-# Address comes from the kernel cmdline so that concurrent microVMs each get a
-# distinct IP on their own /30 (run_firecracker.sh writes guest_ip= and gateway=
-# per instance). Defaults reproduce the original single-VM addressing.
+# ── Network ──
+# Defaults reproduce the original single-VM addressing.
 GUEST_IP=$(grep -oP 'guest_ip=\K\S+' /proc/cmdline || echo "172.16.0.2")
 GATEWAY=$(grep -oP 'gateway=\K\S+' /proc/cmdline || echo "172.16.0.1")
 /usr/bin/busybox ip link set lo up
 /usr/bin/busybox ip addr add "$GUEST_IP/30" dev eth0
 /usr/bin/busybox ip link set eth0 up
 /usr/bin/busybox ip route add default via "$GATEWAY" dev eth0
-# resolv.conf is baked into the image at build time (constant nameserver), so
-# nothing is written here — the rootfs can stay read-only.
 echo "Guest network configured: $GUEST_IP/30 via $GATEWAY"
 
-# ── Parse handler from kernel cmdline ──
 HANDLER=$(grep -oP 'handler=\K\S+' /proc/cmdline || echo "function.handler")
 echo "Handler: $HANDLER"
 
-# ── Hand off to Lambda entrypoint ──
 exec /lambda-entrypoint.sh "$HANDLER"
 WRAPPER
   sudo chmod +x "$MOUNT_DIR/var/runtime/bootstrap"
 
-  # ── Vendor guest Python deps into the rootfs using the image's OWN pip ──────
-  # /var/lang/bin/pip belongs to the guest interpreter, so chrooting into the
-  # rootfs and running it fetches wheels that match the guest exactly (cp310 /
-  # manylinux2014 / x86_64) — no host pip and no cross-compilation involved.
-  # Deps are declared in guest-requirements.txt; they land in the guest's
-  # site-packages and are importable by any function (e.g. igraph for sebs_502).
+  # ─── Vendor guest Python deps into the rootfs ──────────────────────────────
+  # Installed with the image's OWN pip under chroot, so the wheels match the
+  # guest exactly (cp310 / manylinux2014 / x86_64) — no host pip, no
+  # cross-compilation. They land in the guest's site-packages and are importable
+  # by any function (e.g. igraph for sebs_502).
   GUEST_REQS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/guest-requirements.txt"
   if [[ -s "$GUEST_REQS" ]]; then
     if [[ -x "$MOUNT_DIR/var/lang/bin/pip" ]]; then
@@ -223,7 +228,7 @@ WRAPPER
         --no-cache-dir --no-input --disable-pip-version-check \
         --only-binary=:all: \
         -r /tmp/guest-requirements.txt || pip_rc=$?
-      # Always undo the bind mounts before the rootfs umount, even on failure.
+      # Unbind before the rootfs umount, even on failure, or it stays busy.
       sudo umount "$MOUNT_DIR/sys" || true
       sudo umount "$MOUNT_DIR/proc" || true
       sudo umount "$MOUNT_DIR/dev" || true
@@ -243,7 +248,6 @@ WRAPPER
   MOUNT_DIR=""
   echo "Bootstrap wrapper injected."
 
-  # Injection succeeded — promote the partial image and disarm the cleanup trap.
   sudo mv "$IMG_PARTIAL" "$ROOTFS_IMAGE"
   trap - EXIT
   echo "Done: $ROOTFS_IMAGE"
@@ -265,7 +269,6 @@ if [[ ! -f "firecracker" ]]; then
     exit 1
   fi
 
-  # Verify SHA256 checksum
   echo "Verifying SHA256 checksum..."
   if command -v sha256sum &>/dev/null; then
     EXPECTED="$(awk '{print $1}' "$SHA256")"
@@ -286,7 +289,6 @@ if [[ ! -f "firecracker" ]]; then
   fi
   echo "SHA256 verified successfully."
 
-  # Extract archive
   if [[ -d "$folder" ]]; then
     echo "Skipping extraction, directory '$folder' already exists."
   else
@@ -297,6 +299,7 @@ if [[ ! -f "firecracker" ]]; then
 else
   echo "Firecracker binary found, skipping..."
 fi
+
 # ─── Rename binaries to bare 'firecracker' and 'jailer' ──────────────────────
 if [[ -f "firecracker" ]]; then
   echo "Skipping firecracker binary rename, 'firecracker' already exists."

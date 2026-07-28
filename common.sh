@@ -45,6 +45,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Per-instance scratch drives and generated configs.
 FC_RUN_DIR="${FC_RUN_DIR:-$SCRIPT_DIR/instances}"
 
+# Console logs. Deliberately NOT under FC_RUN_DIR, which run_firecracker.sh
+# wipes on shutdown — logs have to outlive the run that produced them. Each
+# launch gets its own timestamped subdirectory (see fc_log_dir), so consecutive
+# runs don't overwrite each other's output.
+FC_LOG_ROOT="${FC_LOG_ROOT:-$SCRIPT_DIR/logs}"
+fc_log_dir()  { echo "$FC_LOG_ROOT/$(date +%Y%m%d-%H%M%S)"; }
+fc_console()  { echo "$1/console-${2:-0}.log"; }  # <run-dir> <instance>
+
 # Per-instance resource names. Each takes an instance id (default 0).
 fc_socket()   { echo "$API_SOCKET_FOLDER/${1:-0}.socket"; }
 fc_config()   { echo "$FC_RUN_DIR/vm_config-${1:-0}.json"; }

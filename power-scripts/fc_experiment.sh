@@ -144,6 +144,22 @@ FC_STARTED=0
 FC_LOG="$OUTDIR/firecracker.log"
 RUNNING=($(fc_instances))
 
+# Diagnostics on a failed launch have to come from two places. FC_LOG captures
+# the launcher's own messages, but Firecracker's log lines and the guest console
+# no longer flow through this pipe — run_firecracker.sh redirects each instance
+# to logs/<timestamp>/console-<k>.log, because its stdout is non-blocking and a
+# full pipe would silently drop those bytes with EAGAIN. So tail both.
+fc_log_tail() {
+    echo "  Launcher log tail ($FC_LOG):" >&2
+    tail -20 "$FC_LOG" 2>/dev/null | sed 's/^/    /' >&2
+    local c
+    for c in "$FC_LOG_ROOT"/latest/console-*.log; do
+        [[ -f "$c" ]] || continue     # unmatched glob stays literal; skip it
+        echo "  Console tail ($c):" >&2
+        tail -20 "$c" 2>/dev/null | sed 's/^/    /' >&2
+    done
+}
+
 if (( ${#RUNNING[@]} >= NUM_VMS )); then
     echo "      reusing ${#RUNNING[@]} running instance(s); skipping launch"
 else
@@ -186,8 +202,7 @@ for (( k=0; k<NUM_VMS; k++ )); do
     done
     if [[ ! -S "$sock" ]]; then
         echo "ERROR: socket never appeared at $sock after 30s." >&2
-        echo "  Firecracker log tail:" >&2
-        tail -20 "$FC_LOG" 2>/dev/null | sed 's/^/    /' >&2
+        fc_log_tail
         exit 1
     fi
 done
@@ -200,7 +215,7 @@ for (( k=0; k<NUM_VMS; k++ )); do
     if [[ -z "$pid" ]]; then
         echo "ERROR: socket $(fc_socket "$k") exists but no firecracker process owns it." >&2
         echo "  Firecracker may have crashed after creating the socket. Log tail:" >&2
-        tail -20 "$FC_LOG" 2>/dev/null | sed 's/^/    /' >&2
+        fc_log_tail
         exit 1
     fi
     FC_PIDS+=("$pid")

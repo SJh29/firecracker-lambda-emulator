@@ -64,9 +64,21 @@ sudo ./run_firecracker.sh -n 4 -S 256        # 4 VMs, 256 MiB /tmp each
 1. Creates a fresh `${SCRATCH_MB}` MiB ext4 scratch image → `instances/scratch-<k>.ext4` (`mkfs.ext4` each launch, so `/tmp` starts empty and identical every run). The rootfs is **not** copied — all instances share `aws_baseimage.ext4` read-only.
 2. Renders `vm_config.template.json` → `instances/vm_config-<k>.json`, substituting the scratch path, TAP device, MAC, and the `guest_ip=`/`gateway=` kernel boot args.
 3. Creates the leaf cgroup `/sys/fs/cgroup/firecracker/vm<k>` and enrolls that VM in it, so the CPU quota is per-instance rather than shared.
-4. Launches Firecracker on `/tmp/firecracker/<k>.socket`.
+4. Launches Firecracker on `/tmp/firecracker/<k>.socket`, with its console redirected to `logs/<timestamp>/console-<k>.log`.
 
 It also invokes `setup_tap.sh -n N` first, marks the scratch directory `nodatacow` on btrfs, and warns if `2 × N` exceeds the host CPU count (contended VMs make the power numbers meaningless).
+
+### Console logs
+
+Each launch creates `logs/<YYYYmmdd-HHMMSS>/`, with one `console-<k>.log` per instance, plus a `logs/latest` symlink to the current run. Unlike `instances/`, these are **not** deleted on shutdown, and they are chowned back to `$SUDO_USER` so they can be read without sudo.
+
+```
+tail -f logs/latest/console-0.log
+```
+
+Each file holds that VM's guest kernel messages, the bootstrap wrapper's output (drive mounts, guest IP, handler), the Lambda RIE's per-invocation `START` / `END` / `REPORT` lines — `REPORT` carries `Duration` and `Max Memory Used`, which pair naturally with the power traces — and Firecracker's own log lines. **Nothing from the VMs appears on the launcher's terminal any more**, so check the log if an instance dies at startup.
+
+> **Why files rather than the terminal.** Firecracker sets its own stdout to `O_NONBLOCK` at startup, because the 8250 serial device is written from the vCPU thread and a blocking write to a slow console would stall the guest. When the fd's buffer fills, `write()` returns `EAGAIN` and the bytes are silently dropped, logged as `Failed the write to serial: IOError(Os { code: 11, kind: WouldBlock, ... })`. A terminal or a pipe (`fc_experiment.sh` tees the launcher through one, 64 KiB buffer) fills easily — all N VMs inherited a *single* stdout, and boot and invocation bursts are exactly when the consumer falls behind. Writes to a regular file ignore `O_NONBLOCK` and never return `EAGAIN`, so per-instance log files remove the failure mode instead of hiding it, while also de-interleaving concurrent guests and keeping terminal rendering out of the host power measurement.
 
 > If a payload can write more than `-S` MiB to `/tmp` in one invocation, the guest hits `ENOSPC` mid-run — raise `-S`. The chacha20 default writes ~16 MiB, well under 128.
 
