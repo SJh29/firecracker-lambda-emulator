@@ -1,0 +1,39 @@
+{
+    "callWithCLI": false,
+    "callAsync": false,
+    "memorySettings": [],
+
+    "payloads": [
+        { "method": "chacha20", "rounds": 100000, "password": "benchmarkpass", "seed": 42 }
+    ],
+    "shufflePayloads": false,
+    "randomSeed": 42,
+
+    "runs": 20,
+    "threads": 1,
+    "iterations": 3,
+    "sleepTime": 5,
+    "warmupBuffer": 1,
+
+    "outputGroups": ["uuid", "endpoint", "cpuType", "newcontainer", "zAll"],
+    "outputRawOfGroup": ["uuid", "endpoint"],
+    "showAsList": ["cpuType", "uuid", "endpoint"],
+    "showAsSum": ["newcontainer"],
+
+    "ignoreFromAll": ["zAll", "lang", "version", "linuxVersion", "platform", "hostname",
+                      "host_name", "cpuInfo", "proc_before", "proc_after", "payload",
+                      "message"],
+    "ignoreFromGroups": ["1_run_id", "2_thread_id", "cpuModel"],
+    "ignoreByGroup": {
+        "uuid": ["uuid"],
+        "endpoint": ["endpoint"],
+        "cpuType": ["cpuType"]
+    },
+
+    "invalidators": {},
+    "removeDuplicateContainers": false,
+    "overlapFilter": "",
+
+    "openCSV": false,
+    "combineSheets": true
+}

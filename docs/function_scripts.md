@@ -20,6 +20,7 @@ Every VM is identified by an integer **instance id** `k`, starting at 0. All of 
 | Guest IP | `172.16.0.<4k+2>` | `172.16.0.2` | `172.16.0.6` |
 | Guest MAC | `06:00:AC:10:00:<4k+2>` | `...:02` | `...:06` |
 | cgroup | `/sys/fs/cgroup/firecracker/vm<k>` | `.../vm0` | `.../vm1` |
+| CPU set | `vcpu_count` whole physical cores | e.g. `0,2` | e.g. `4,6` |
 
 **Drive layout — what's shared vs. per-instance:**
 
@@ -33,7 +34,7 @@ Each VM also gets its **own point-to-point /30**, so the host routing table stay
 
 Instance 0 resolves to exactly the old single-VM values, so the previous setup is just the `k=0` case of this one. The last usable /30 is `172.16.0.252`, capping the design at **64 instances** (`k` = 0..63).
 
-The addressing helpers (`fc_socket`, `fc_scratch`, `fc_tap`, `fc_host_ip`, `fc_guest_ip`, `fc_mac`, `fc_instances`) all live in [common.sh](../common.sh) — no script hardcodes these paths.
+The addressing helpers (`fc_socket`, `fc_scratch`, `fc_tap`, `fc_host_ip`, `fc_guest_ip`, `fc_mac`, `fc_instances`) all live in [common.sh](../common.sh) — no script hardcodes these paths. The CPU topology helpers (`fc_core_pool`, `fc_reserved_cpus`, `fc_free_cpus`) live there too.
 
 > A separate benchmark, [temp_reflink_setup.sh](../temp_reflink_setup.sh), instead gives each VM a `cp --reflink=auto` **writable** clone of the whole rootfs (`instances/rootfs-<k>.ext4`) and times create→first-invocation. It's the alternative this shared-rootfs + scratch layout was chosen over; keep it only for the comparison.
 
@@ -59,12 +60,28 @@ sudo ./run_firecracker.sh -n 4 -S 256        # 4 VMs, 256 MiB /tmp each
 | `-n NUM_INSTANCES` | Number of concurrent microVMs (1–64) | `1` |
 | `-m MEM_MIB` | Guest memory per VM; also rewrites `func_mem_size` in the boot args | from template (`3538`) |
 | `-S SCRATCH_MB` | Size of each VM's writable `/tmp` scratch drive | `128` |
+| `-u` | Run unmetered (`cpu.max=max`) instead of enforcing the Lambda quota | off |
+
+| Env | Description | Default |
+|---|---|---|
+| `PIN_CPUS` | `1`/`0` forces per-instance CPU pinning on/off | on at ≥ 1769 MiB, off below |
+| `CPU_MAX` | Raw `cpu.max` quota; overrides both the default and `-u` | — |
 
 **What it does, per instance:**
 1. Creates a fresh `${SCRATCH_MB}` MiB ext4 scratch image → `instances/scratch-<k>.ext4` (`mkfs.ext4` each launch, so `/tmp` starts empty and identical every run). The rootfs is **not** copied — all instances share `aws_baseimage.ext4` read-only.
 2. Renders `vm_config.template.json` → `instances/vm_config-<k>.json`, substituting the scratch path, TAP device, MAC, and the `guest_ip=`/`gateway=` kernel boot args.
 3. Creates the leaf cgroup `/sys/fs/cgroup/firecracker/vm<k>` and enrolls that VM in it, so the CPU quota is per-instance rather than shared.
 4. Launches Firecracker on `/tmp/firecracker/<k>.socket`, with its console redirected to `logs/<timestamp>/console-<k>.log`.
+
+### CPU quota and pinning
+
+`cpu.max` is set to `mem_size_mib / 1769` vCPUs per instance — AWS Lambda's CPU-per-memory ratio — so a guest gets the same share of a core that the equivalent Lambda would. `-u` removes the cap; use it only when the run is not being compared against Lambda.
+
+The quota governs *how much* CPU a VM gets, not *which* CPUs it runs on, so each instance also gets a `cpuset` of `vcpu_count` whole physical cores. Hyperthread siblings are left idle and a VM's cores never straddle a NUMA node, which keeps concurrent instances from contending for execution units and keeps core assignment stable between runs. Pinning is skipped with a warning if the host has fewer physical cores than `N × vcpu_count`.
+
+Pinning is **off by default below 1769 MiB**. At that point the quota is already less than one full vCPU, so a dedicated core per instance would sit mostly idle and would cap the instance count at the host's physical core count for no benefit — the quota alone is enough. Above it, set `PIN_CPUS=0` to turn pinning off, or `PIN_CPUS=1` to force it on at low memory.
+
+Both need the `cpu` and `cpuset` controllers delegated — run [install_cgroup.sh](../install_cgroup.sh) once to check.
 
 It also invokes `setup_tap.sh -n N` first, marks the scratch directory `nodatacow` on btrfs, and warns if `2 × N` exceeds the host CPU count (contended VMs make the power numbers meaningless).
 
@@ -140,6 +157,76 @@ Sends a JSON payload to the Lambda Runtime Interface Emulator (RIE) inside a gue
 ```
 
 With `-a` the instances are fired simultaneously (not one after another), so they contend for the host the way a real concurrent workload would. Responses are buffered and printed in instance order so parallel output doesn't interleave. Exits non-zero if any response contains an `errorMessage` field or if `curl` times out.
+
+---
+
+## [function_scripts/gen_saaf_functions.sh](../function_scripts/gen_saaf_functions.sh)
+
+Writes one SAAF function JSON per running instance, each pointing at that VM's RIE endpoint.
+
+**Requires:** Running VMs, `jq`.
+
+| Flag | Description | Default |
+|---|---|---|
+| `-o OUTDIR` | Directory to write into | `saaf/functions` |
+| `-N NAME` | Base function name (files get a `-vm<k>` suffix) | `firecracker` |
+
+---
+
+## [function_scripts/run_saaf_experiment.sh](../function_scripts/run_saaf_experiment.sh)
+
+Drives every running microVM concurrently with [saaf_driver.py](../function_scripts/saaf_driver.py) and writes SAAF reports.
+
+**Requires:** Running VMs, the `SAAF` submodule (`git submodule update --init`), `python3` with `requests`, `jq`.
+
+```
+./function_scripts/run_saaf_experiment.sh
+./function_scripts/run_saaf_experiment.sh -e saaf/my-experiment.json -o saaf/results/run1
+```
+
+| Flag | Description | Default |
+|---|---|---|
+| `-e EXPERIMENT` | SAAF experiment JSON | `saaf/experiment-fidelity.json` |
+| `-o OUTDIR` | Results directory | `saaf/results/<timestamp>` |
+| `-N NAME` | Report file prefix | `firecracker` |
+
+| Env | Description | Default |
+|---|---|---|
+| `SAAF_DIR` | Path to the SAAF checkout | `SAAF` |
+
+The script itself only discovers instances, generates their function JSONs, and `taskset`s the driver onto CPUs no microVM is using — the complement of every instance's `cpuset` plus their hyperthread siblings — so the load generator never competes with a guest for a core. It warns if the instances aren't pinned, and if any has `cpu.max=max` (an unmetered guest isn't held to the Lambda CPU allocation, so its durations aren't comparable).
+
+---
+
+## [function_scripts/saaf_driver.py](../function_scripts/saaf_driver.py)
+
+Replaces SAAF's `faas_runner.py`. Report generation is **not** reimplemented — `report()` and `write_file()` are imported from the submodule, so the CSVs are the same ones SAAF would produce.
+
+```
+python3 function_scripts/saaf_driver.py -f FUNC.json [FUNC.json ...] \
+    -e EXPERIMENT.json -o OUTDIR --saaf SAAF [--name PREFIX]
+```
+
+**Why not `faas_runner.py`.** It can only ever call `functions[0]`: `experiment_orchestrator.py` passes `callExperiment([func], exp)`, so the per-function fan-out inside `callExperiment` is unreachable and N endpoints cannot be driven from one invocation. Working around that meant one process per VM, flattening raw run directories to re-feed `compile_results.py`, and a no-op `xdg-open` on `PATH` because `compile_results.py` hardcodes `write_file(..., True)` and blocks forever on a headless host. Calling `report()` directly removes all three.
+
+It also drops two upstream landmines: the payload list is sized to `runs` while the thread loop consumes `runs x endpoints` (`IndexError`, swallowed by a bare `except`, leaving threads unstarted), and responses are parsed with `ast.literal_eval`, which rejects JSON `null`/`true`/`false`. The driver sizes payloads correctly and uses `json.loads`.
+
+**Semantics.** `runs` is the total across all endpoints and `threads` is the concurrency, exactly as in SAAF — so one experiment file describes the same workload on Lambda and here. Each endpoint gets `runs / endpoints` sequential calls with one request in flight, because the RIE serves a single invocation at a time; concurrency comes from the VM count. If `threads` doesn't equal the number of endpoints, the driver says so and uses the endpoint count.
+
+Per-run fields (`1_run_id`, `2_thread_id`, `zAll`, `roundTripTime`, `latency`, the `cpuType`/`cpuModel` concat, and the comma/tab/newline stripping that `report()`'s unquoted CSV writer needs) are ported from `callPostProcessor` unchanged, with one intentional difference: **`endpoint` is always recorded.** SAAF drops it whenever the response carries a `platform` field, which the Inspector always sets — which is why it was missing from reports before.
+
+**Reading the results.** Output layout:
+
+```
+saaf/results/<timestamp>/
+  functions/vm<k>.json                  generated endpoints
+  <name>-<experiment>-run<i>.csv        one report per iteration
+  <name>-<experiment>-run<i>/           that iteration's raw run JSONs
+  <name>-<experiment>-COMBINED.csv      iterations past warmupBuffer, merged
+  driver.log
+```
+
+Group by **`endpoint`** or **`uuid`** — not `vmID` or `containerID`. `containerID` is the RIE's fixed log-stream name and is identical in every VM; `vmID` is read from a cgroup v1 path the guest doesn't have and comes back empty. `uuid` comes from `/tmp/container-id` on the per-instance scratch drive, so it is unique per VM per launch. For the same reason `newcontainer=1` marks each VM's first call: the scratch drive is re-`mkfs`'d every launch, so a cold start needs a VM relaunch, not just another iteration.
 
 ---
 

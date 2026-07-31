@@ -33,7 +33,11 @@
 API_SOCKET_FOLDER="${API_SOCKET_FOLDER:-/tmp/firecracker}"
 LOGFILE="./firecracker.log"
 
+# Parent cgroup for the per-instance leaves (firecracker/vm<k>).
+FC_CGROUP="${FC_CGROUP:-/sys/fs/cgroup/firecracker}"
+
 NET_PREFIX="172.16.0"
+# 172.16.0.(4k+2) 
 MASK_SHORT="/30"
 MAX_INSTANCES=64
 
@@ -84,6 +88,65 @@ fc_instances() {
         [[ "$id" =~ ^[0-9]+$ ]] && echo "$id"
     done | sort -n
     (( had_nullglob )) || shopt -u nullglob
+}
+
+# ─── Host CPU topology ───────────────────────────────────────────────────────
+
+# One CPU per physical core (hyperthread siblings excluded), as "<cpu> <node>"
+# per line, ordered by NUMA node, then socket, then core.
+fc_core_pool() {
+    lscpu -p=CPU,CORE,SOCKET,NODE 2>/dev/null \
+      | grep -v '^#' \
+      | awk -F, '{ print $1, ($4 == "" ? 0 : $4), $3, $2 }' \
+      | sort -k2,2n -k3,3n -k4,4n -k1,1n \
+      | awk '!seen[$3","$4]++ { print $1, $2 }'
+}
+
+# Expand a cpuset list ("0-3,8") to one CPU id per line.
+fc_cpu_expand() {
+    local -a parts; local part lo hi c
+    IFS=',' read -ra parts <<< "$1"
+    for part in "${parts[@]}"; do
+        if [[ "$part" == *-* ]]; then
+            lo="${part%%-*}"; hi="${part##*-}"
+            for (( c = lo; c <= hi; c++ )); do echo "$c"; done
+        elif [[ -n "$part" ]]; then
+            echo "$part"
+        fi
+    done
+}
+
+# CPUs sharing a physical core with CPU $1, as a cpuset list.
+fc_thread_siblings() {
+    local f="/sys/devices/system/cpu/cpu$1/topology/thread_siblings_list"
+    if [[ -r "$f" ]]; then cat "$f"; else echo "$1"; fi
+}
+
+# Every CPU pinned to an instance plus their hyperthread siblings, ascending.
+# Reads cpuset.cpus, not cpuset.cpus.effective, so an unpinned run reports
+# nothing rather than the whole host.
+fc_reserved_cpus() {
+    local leaf cpus c
+    for leaf in "$FC_CGROUP"/vm*/cpuset.cpus; do
+        [[ -r "$leaf" ]] || continue
+        cpus="$(<"$leaf")"
+        [[ -n "$cpus" ]] || continue
+        for c in $(fc_cpu_expand "$cpus"); do
+            fc_cpu_expand "$(fc_thread_siblings "$c")"
+        done
+    done | sort -n -u
+}
+
+# CPUs not in fc_reserved_cpus, as a cpuset list. Empty if nothing is pinned.
+fc_free_cpus() {
+    local -a reserved; local c out=""
+    mapfile -t reserved < <(fc_reserved_cpus)
+    (( ${#reserved[@]} )) || return 0
+    for (( c = 0; c < $(nproc --all); c++ )); do
+        [[ " ${reserved[*]} " == *" $c "* ]] && continue
+        out+="${out:+,}$c"
+    done
+    echo "$out"
 }
 
 # Backwards-compatible single-VM aliases (instance 0).
