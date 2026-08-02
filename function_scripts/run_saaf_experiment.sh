@@ -15,7 +15,7 @@ set -e
 source "$(dirname "${BASH_SOURCE[0]}")/../common.sh"
 
 SAAF_DIR="${SAAF_DIR:-$SCRIPT_DIR/SAAF}"
-EXPERIMENT="$SCRIPT_DIR/saaf/experiment-fidelity.json"
+EXPERIMENT="$SCRIPT_DIR/saaf-experiment/experiment-fidelity.json"
 OUTDIR=""
 NAME="firecracker"
 
