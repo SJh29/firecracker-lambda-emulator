@@ -4,7 +4,7 @@ An AWS Lambda emulator built on [Firecracker](https://github.com/firecracker-mic
 
 ## Initialization
 
-The repository contains Firecracker releases for both ARM and x86_64 architectures, plus everything needed to build a Lambda-compatible guest rootfs from the real [`aws/aws-lambda-base-images`](https://github.com/aws/aws-lambda-base-images/tree/python3.10/x86_64) layers. Install scripts detect host architecture and resolve the matching release automatically.
+The repository contains Firecracker releases for x86_64 architecture, plus everything needed to build a Lambda-compatible guest rootfs from the real [`aws/aws-lambda-base-images`](https://github.com/aws/aws-lambda-base-images/tree/python3.10/x86_64) layers. Install scripts detect host architecture and resolve the matching release automatically.
 
 ## Install & Run
 
