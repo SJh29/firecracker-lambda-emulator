@@ -6,11 +6,18 @@ An AWS Lambda emulator built on [Firecracker](https://github.com/firecracker-mic
 
 SAAF telemetry from the 502.graph-mst benchmark ([`function/function.py`](./function/function.py)), Firecracker vs. real AWS Lambda on matching CPU hardware (`cpuType` `2.50GHz`, n=10000 Firecracker invocations vs. 7234 Lambda invocations):
 
-![Runtime ECDF: Firecracker and AWS Lambda cumulative runtime distributions overlap almost exactly through the 99th percentile](docs/figs/fig3-runtime-ecdf-cpu-2.50GHz.png)
-
-![Core timing distributions: runtime and userRuntime differ by about 0.2%, process_time by about 3.5%, graph_generating_time by about 0.3%](docs/figs/fig2-core-timing-distributions-cpu-2.50GHz.png)
-
-![Signed percent difference by SAAF metric, Firecracker relative to AWS Lambda](docs/figs/fig1-percent-difference-cpu-2.50GHz.png)
+<table>
+<tr>
+<td width="33%"><img src="docs/figs/fig3-runtime-ecdf-cpu-2.50GHz.png" alt="Runtime ECDF: Firecracker and AWS Lambda cumulative runtime distributions overlap almost exactly through the 99th percentile" width="100%"></td>
+<td width="33%"><img src="docs/figs/fig2-core-timing-distributions-cpu-2.50GHz.png" alt="Core timing distributions: runtime and userRuntime differ by about 0.2%, process_time by about 3.5%, graph_generating_time by about 0.3%" width="100%"></td>
+<td width="33%"><img src="docs/figs/fig1-percent-difference-cpu-2.50GHz.png" alt="Signed percent difference by SAAF metric, Firecracker relative to AWS Lambda" width="100%"></td>
+</tr>
+<tr>
+<td align="center"><sub>Runtime ECDF</sub></td>
+<td align="center"><sub>Core timing distributions</sub></td>
+<td align="center"><sub>Signed % difference by metric</sub></td>
+</tr>
+</table>
 
 The metrics that reflect actual work (`runtime`, `userRuntime`, `cpuUser`) agree within ~1.5% -- that's the basis for the ~0.5% figure above. The large deltas at the bottom of the third chart (`cpuSteal`, `cpuSoftIrq`, `cpuIdle`, ...) are host CPU-accounting fields read from `/proc/stat` (see [`function/Inspector.py`](./function/Inspector.py)), not workload duration -- a single-tenant Firecracker microVM has essentially no steal time or softirq load to report, so those fields diverge from a shared-tenant Lambda sandbox without implying the benchmark itself ran differently.
 
