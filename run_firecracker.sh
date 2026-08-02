@@ -1,5 +1,5 @@
 #!/bin/bash
-# run_firecracker.sh — launch N concurrent Firecracker microVMs and block until
+# run_firecracker.sh -- launch N concurrent Firecracker microVMs and block until
 # they exit. Must be run with sudo; Firecracker needs root for /dev/kvm.
 #
 # Usage: sudo ./run_firecracker.sh [-m MEM_MIB] [-n NUM_INSTANCES] [-S SCRATCH_MB] [-u]
@@ -26,7 +26,7 @@
 # A guest's only writable surface is its scratch drive, mounted at /tmp and
 # mkfs'd fresh each launch, so a run can neither corrupt the shared images nor
 # carry state into the next one. Per-instance names all derive from the instance
-# id k via the helpers in common.sh — see the addressing table there.
+# id k via the helpers in common.sh -- see the addressing table there.
 set -e
 
 # Resolved from the script's own path rather than $PWD or $HOME, so it stays
@@ -62,20 +62,15 @@ BASE_ROOTFS="$HERE/$ROOTFS_IMAGE"
 [[ -f "$HERE/function.ext4" ]] || { error "function drive not found: $HERE/function.ext4 (run function_scripts/build_function.sh)"; exit 1; }
 
 # Each VM pins ~1 vCPU plus a VMM thread, so oversubscribing the host makes the
-# power numbers meaningless. Warn rather than refuse — it's still runnable.
+# power numbers meaningless. Warn rather than refuse -- it's still runnable.
 NPROC=$(nproc)
 if (( NUM_INSTANCES * 2 > NPROC )); then
-    warn "$NUM_INSTANCES instances need $(( NUM_INSTANCES * 2 )) CPUs but the host has $NPROC — measurements will be contended."
+    warn "$NUM_INSTANCES instances need $(( NUM_INSTANCES * 2 )) CPUs but the host has $NPROC -- measurements will be contended."
 fi
 
 # ── Run directories ─────────────────────────────────────────────────────────
 # Firecracker refuses to start if its socket already exists, so the previous
 # run's state is cleared rather than reused.
-#
-# Console logs are the exception: they live outside FC_RUN_DIR so that
-# cleanup(), which wipes that directory, can't delete the logs of the run it is
-# tearing down. One timestamped directory per launch, plus a `latest` symlink,
-# owned by the invoking user so reading them doesn't need sudo.
 sudo rm -rf "$API_SOCKET_FOLDER" "$FC_RUN_DIR"
 sudo mkdir -p "$API_SOCKET_FOLDER" "$FC_RUN_DIR"
 
@@ -86,9 +81,7 @@ sudo ln -sfn "$LOG_DIR" "$FC_LOG_ROOT/latest"
 sudo chown -R "$LOG_OWNER" "$FC_LOG_ROOT" 2>/dev/null || true
 
 # nodatacow keeps the write-heavy /tmp images from fragmenting or paying btrfs
-# per-write checksum/CoW overhead, which would land in host package power
-# (RAPL/turbostat) and contaminate the measurement. Only affects files created
-# afterward, so it has to precede the mkfs below.
+# per-write checksum/CoW overhead
 command -v chattr &>/dev/null && sudo chattr +C "$FC_RUN_DIR" 2>/dev/null || true
 
 # ── Host networking ─────────────────────────────────────────────────────────
@@ -98,19 +91,18 @@ sudo bash "$HERE/function_scripts/setup_tap.sh" -n "$NUM_INSTANCES"
 # ── Per-instance CPU quota (cgroup v2) ──────────────────────────────────────
 # Allocate 1 full vCPU of host CPU time per 1769 MB of guest memory (AWS Lambda
 # ratio). vm_config's vcpu_count only creates virtual CPUs inside the guest; the
-# real host CPU allocation is enforced here via cpu.max. When guest memory
-# crosses 1769 MB the quota exceeds 1 vCPU, so vcpu_count is bumped to
-# ceil(mem/1769) or the guest can't schedule across more than one host CPU.
-#
-# Each VM lands in its own leaf cgroup (firecracker/vm<k>) so the quota is
-# per-instance. cgroup v2 forbids processes in a cgroup that has children, so
-# this shell stays out of the parent and each child enrolls itself below.
+# real host CPU allocation is enforced here via cpu.max. 
+
 MEM_MIB=$(jq -r '."machine-config".mem_size_mib' "$HERE/vm_config.template.json")
 [[ -n "$MEM_OVERRIDE" ]] && MEM_MIB="$MEM_OVERRIDE"
 
 CPU_PERIOD_US=100000
 CPU_QUOTA_US=$((MEM_MIB * CPU_PERIOD_US / 1769))
 ((CPU_QUOTA_US > 0)) || CPU_QUOTA_US=1000
+
+# When guest memory crosses 1769 MB the quota exceeds 1 vCPU, 
+# so vcpu_count is bumped to ceil(mem/1769) or the guest can't
+# schedule across more than one host CPU.
 
 VCPU_COUNT=$(jq -r '."machine-config".vcpu_count' "$HERE/vm_config.template.json")
 if ((MEM_MIB > 1769)); then
@@ -132,7 +124,7 @@ sudo mkdir -p "$CGROUP" || CGROUP_OK=0
 # with CPU_MAX=max there's no quota to enforce anyway.
 if (( CGROUP_OK )) && ! grep -qw cpu "$CGROUP/cgroup.subtree_control" 2>/dev/null; then
     echo "+cpu" | sudo tee "$CGROUP/cgroup.subtree_control" >/dev/null 2>&1 || {
-        warn "could not enable the cpu controller on $CGROUP — running without a CPU quota."
+        warn "could not enable the cpu controller on $CGROUP -- running without a CPU quota."
         warn "run ./install_cgroup.sh to fix; VMs will still start."
         CGROUP_OK=0
     }
@@ -143,8 +135,8 @@ fi
 
 # ── Per-instance CPU pinning (cgroup v2 cpuset) ─────────────────────────────
 # cpu.max caps how much CPU time a VM gets, not which CPUs it runs on. Each
-# instance is given VCPU_COUNT whole physical cores from fc_core_pool — one core
-# per vCPU, hyperthread siblings left idle — allocated so a VM's cores never
+# instance is given VCPU_COUNT whole physical cores from fc_core_pool -- one core
+# per vCPU, hyperthread siblings left idle -- allocated so a VM's cores never
 # straddle a NUMA node. Pinning is skipped entirely if the host is too small.
 #
 # Below 1769 MB the quota is a fraction of one vCPU, so a dedicated core per
@@ -163,7 +155,7 @@ VM_CPUS=(); VM_NODE=()
 if (( CGROUP_OK )) && (( PIN_CPUS )); then
     if ! grep -qw cpuset "$CGROUP/cgroup.subtree_control" 2>/dev/null; then
         echo "+cpuset" | sudo tee "$CGROUP/cgroup.subtree_control" >/dev/null 2>&1 || {
-            warn "could not enable the cpuset controller on $CGROUP — running unpinned."
+            warn "could not enable the cpuset controller on $CGROUP -- running unpinned."
             PIN_CPUS=0
         }
     fi
@@ -177,7 +169,7 @@ if (( CGROUP_OK )) && (( PIN_CPUS )); then
 
     NEED=$(( NUM_INSTANCES * VCPU_COUNT ))
     if (( ${#POOL_CPU[@]} < NEED )); then
-        warn "pinning needs $NEED physical cores ($NUM_INSTANCES x $VCPU_COUNT vcpu) but the host has ${#POOL_CPU[@]} — running unpinned."
+        warn "pinning needs $NEED physical cores ($NUM_INSTANCES x $VCPU_COUNT vcpu) but the host has ${#POOL_CPU[@]} -- running unpinned."
         warn "lower -n, or set PIN_CPUS=0 to silence this."
         PIN_CPUS=0
     fi
@@ -193,7 +185,7 @@ if (( CGROUP_OK )) && (( PIN_CPUS )); then
             idx=$(( idx + 1 ))
         done
         if (( idx + VCPU_COUNT > ${#POOL_CPU[@]} )); then
-            warn "ran out of node-aligned cores at instance $k — running unpinned."
+            warn "ran out of node-aligned cores at instance $k -- running unpinned."
             VM_CPUS=(); VM_NODE=()
             break
         fi
@@ -210,11 +202,11 @@ fi
     || echo "CPU pinning: disabled${PIN_OFF_REASON:+  ($PIN_OFF_REASON)}"
 
 # ── Per-instance scratch drives and configs ─────────────────────────────────
-# The scratch image is mkfs'd every launch so runs stay comparable — the same
+# The scratch image is mkfs'd every launch so runs stay comparable -- the same
 # empty filesystem each time, rather than divergence accumulating across runs.
 #
 # func_mem_size is a kernel boot arg the guest init reads, so it has to track
-# mem_size_mib; both are rewritten from the same $MEM_MIB below.
+# mem_size_mib; 
 for (( k=0; k<NUM_INSTANCES; k++ )); do
     scratch="$(fc_scratch "$k")"
     config="$(fc_config "$k")"
@@ -262,14 +254,7 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 # ── Launch ──────────────────────────────────────────────────────────────────
-# Consoles go to one file per instance instead of this terminal. Firecracker
-# sets its own stdout non-blocking, so once that fd's buffer fills the output is
-# dropped with "Failed the write to serial: ... WouldBlock" — which a terminal
-# or a pipe shared by N VMs does readily. Writes to a regular file never return
-# EAGAIN, so this removes the failure mode rather than hiding it, and keeps
-# terminal rendering out of the power measurement.
-#
-# Firecracker's own diagnostics land in the same file, so a VM that dies at
+# Consoles go to one file per instance instead of this terminal. Firecracker's own diagnostics land in the same file, so a VM that dies at
 # startup explains itself there and not here.
 for (( k=0; k<NUM_INSTANCES; k++ )); do
     SOCKET="$(fc_socket "$k")"
@@ -292,15 +277,15 @@ for (( k=0; k<NUM_INSTANCES; k++ )); do
             # cpuset before cgroup.procs, so the VM never runs unpinned.
             if [[ -n "${VM_CPUS[k]:-}" ]]; then
                 echo "${VM_CPUS[k]}" | sudo tee "$CGROUP/vm$k/cpuset.cpus" >/dev/null \
-                    || warn "instance $k: could not set cpuset.cpus — running unpinned."
+                    || warn "instance $k: could not set cpuset.cpus -- running unpinned."
                 echo "${VM_NODE[k]}" | sudo tee "$CGROUP/vm$k/cpuset.mems" >/dev/null \
-                    || warn "instance $k: could not set cpuset.mems — memory not node-bound."
+                    || warn "instance $k: could not set cpuset.mems -- memory not node-bound."
             fi
             # Non-fatal: an unmetered VM still runs.
             echo "$CPU_MAX $CPU_PERIOD_US" | sudo tee "$CGROUP/vm$k/cpu.max" >/dev/null \
-                || warn "instance $k: could not set cpu.max — running without a CPU quota."
+                || warn "instance $k: could not set cpu.max -- running without a CPU quota."
             echo "$vm_pid" | sudo tee "$CGROUP/vm$k/cgroup.procs" >/dev/null \
-                || warn "instance $k: could not join $CGROUP/vm$k — running without a CPU quota."
+                || warn "instance $k: could not join $CGROUP/vm$k -- running without a CPU quota."
         fi
         exec "$HERE/firecracker" \
             --api-sock "$SOCKET" \

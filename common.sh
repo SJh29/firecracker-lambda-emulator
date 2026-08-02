@@ -13,21 +13,7 @@
 #   guest MAC 06:00:AC:10:00:<4k+2>   (last 4 octets encode the guest IP)
 #
 # The rootfs (aws_baseimage.ext4) and the function drive (function.ext4) are
-# NOT per-instance: every VM mounts them read-only and shares one copy. Only
-# writable state is per-instance — a small scratch drive mounted at /tmp inside
-# the guest. This keeps the write-heavy path off any shared file (so no ext4
-# corruption) and, on btrfs, off the copy-on-write path (fresh mkfs, nodatacow),
-# so repeated writes don't fragment a reflinked image and skew measurements.
-#
-# scratch drives live in FC_RUN_DIR beside the base image. fc_rootfs() is kept
-# for the reflink benchmark (temp_reflink_setup.sh), which clones the rootfs
-# per instance instead of sharing it — the alternative this layout replaced.
-#
-# One /30 per VM gives each guest its own point-to-point link to the host, so
-# the host routing table stays unambiguous. Instance 0 resolves to the original
-# single-VM values (tap0, 172.16.0.1/172.16.0.2), so the old setup is just the
-# k=0 case of the new one.
-#
+# NOT per-instance.  Only writable state is a per-instance scratch drive mounted at /tmp inside the guest. 
 # The last usable /30 is 172.16.0.252, so k tops out at 63 → 64 instances.
 
 API_SOCKET_FOLDER="${API_SOCKET_FOLDER:-/tmp/firecracker}"
@@ -49,10 +35,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Per-instance scratch drives and generated configs.
 FC_RUN_DIR="${FC_RUN_DIR:-$SCRIPT_DIR/instances}"
 
-# Console logs. Deliberately NOT under FC_RUN_DIR, which run_firecracker.sh
-# wipes on shutdown — logs have to outlive the run that produced them. Each
-# launch gets its own timestamped subdirectory (see fc_log_dir), so consecutive
-# runs don't overwrite each other's output.
+# Console logs
 FC_LOG_ROOT="${FC_LOG_ROOT:-$SCRIPT_DIR/logs}"
 fc_log_dir()  { echo "$FC_LOG_ROOT/$(date +%Y%m%d-%H%M%S)"; }
 fc_console()  { echo "$1/console-${2:-0}.log"; }  # <run-dir> <instance>

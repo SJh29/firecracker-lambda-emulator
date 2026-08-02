@@ -6,7 +6,7 @@ Replaces SAAF's faas_runner.py, which can only ever call functions[0]
 generation is not reimplemented: report() and write_file() are imported from
 the SAAF checkout, so the CSVs are byte-identical to what faas_runner produces.
 
-One in-flight request per endpoint — the Lambda RIE inside each guest serves a
+One in-flight request per endpoint -- the Lambda RIE inside each guest serves a
 single invocation at a time, so concurrency comes from the VM count.
 
 Usage:

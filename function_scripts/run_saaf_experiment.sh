@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# run_saaf_experiment.sh — drive every running microVM with saaf_driver.py.
+# run_saaf_experiment.sh -- drive every running microVM with saaf_driver.py.
 #
 # Discovers the running instances, generates their function JSONs, pins the
 # driver to CPUs no guest is using, and runs it.
@@ -48,7 +48,7 @@ python3 -c 'import requests' 2>/dev/null || {
 
 TARGETS=($(fc_instances))
 ((${#TARGETS[@]})) || {
-  error "no running instances found in $API_SOCKET_FOLDER — start them with run_firecracker.sh"
+  error "no running instances found in $API_SOCKET_FOLDER -- start them with run_firecracker.sh"
   exit 1
 }
 
@@ -57,7 +57,7 @@ TARGETS=($(fc_instances))
 for k in "${TARGETS[@]}"; do
   quota="$(cat "$FC_CGROUP/vm$k/cpu.max" 2>/dev/null || echo unknown)"
   if [[ "$quota" == max* ]]; then
-    warn "instance $k has cpu.max=max — durations will not be comparable. Relaunch without -u."
+    warn "instance $k has cpu.max=max -- durations will not be comparable. Relaunch without -u."
     break
   fi
 done
@@ -71,7 +71,7 @@ FUNCS=()
 for k in "${TARGETS[@]}"; do FUNCS+=("$FUNCDIR/vm$k.json"); done
 
 CLIENT_CPUS="$(fc_free_cpus)"
-[[ -n "$CLIENT_CPUS" ]] || warn "instances are not pinned — the driver will share cores with the guests."
+[[ -n "$CLIENT_CPUS" ]] || warn "instances are not pinned -- the driver will share cores with the guests."
 
 log "instances : ${#TARGETS[@]} (${TARGETS[*]})"
 log "experiment: $EXPERIMENT"
@@ -89,5 +89,5 @@ CMD=(python3 "$SCRIPT_DIR/function_scripts/saaf_driver.py"
 "${CMD[@]}" 2>&1 | tee "$OUTDIR/driver.log"
 rc="${PIPESTATUS[0]}"
 
-((rc == 0)) || { error "saaf_driver.py failed (exit $rc) — see $OUTDIR/driver.log"; exit "$rc"; }
+((rc == 0)) || { error "saaf_driver.py failed (exit $rc) -- see $OUTDIR/driver.log"; exit "$rc"; }
 success "experiment complete → $OUTDIR"

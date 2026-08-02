@@ -6,7 +6,7 @@ Start with `fc_arch.sh` on a new host to see which collectors will actually work
 
 ## Concurrent instances
 
-Sockets are per-instance: `/tmp/firecracker/<k>.socket` (see [function_scripts.md](function_scripts.md#concurrency-model)). Every script here defaults to instance 0 — pass another socket path to target a different VM:
+Sockets are per-instance: `/tmp/firecracker/<k>.socket` (see [function_scripts.md](function_scripts.md#concurrency-model)). Every script here defaults to instance 0 -- pass another socket path to target a different VM:
 
 ```
 sudo ./power-scripts/fc_pidstat.sh /tmp/firecracker/2.socket 1 60 vm2.csv
@@ -17,7 +17,7 @@ The collectors fall into two groups, and `fc_experiment.sh` runs them accordingl
 | Scope | Scripts | Behaviour with N VMs |
 |---|---|---|
 | **Per-PID / per-cgroup** | `fc_proc.py`, `fc_pidstat.sh`, `fc_perf.sh`, `fc_ml_metrics.sh`, `fc_pressure.py` | One collector per VM. Each resolves its socket to that VM's PID (and its `/sys/fs/cgroup/firecracker/vm<k>` cgroup), so the traces stay cleanly separated. |
-| **Host-wide** | `fc_rapl.py`, `fc_turbostat.sh`, `fc_arm_power.py` | One collector for the whole host. RAPL, turbostat, and hwmon measure the CPU package (or board), not a process, so N copies would just re-read the same counters. Their totals cover all VMs together — attribute per-VM energy using the per-instance `proc`/`perf` traces. |
+| **Host-wide** | `fc_rapl.py`, `fc_turbostat.sh`, `fc_arm_power.py` | One collector for the whole host. RAPL, turbostat, and hwmon measure the CPU package (or board), not a process, so N copies would just re-read the same counters. Their totals cover all VMs together -- attribute per-VM energy using the per-instance `proc`/`perf` traces. |
 
 `fc_pid.sh` refuses to guess when it can't map a socket to a PID and more than one Firecracker is running, rather than silently attaching the collectors to the wrong VM. Install `fuser`, `ss` or `lsof` so the socket owner can always be resolved exactly.
 
@@ -38,26 +38,26 @@ Checks for RAPL (`/sys/class/powercap/intel-rapl*`), hwmon energy sensors, a bat
 FCTOOLS_ENV: family=x86 arch=x86_64 rapl=True hwmon=False battery=False turbostat=True perf=True
 ```
 
-Notably, `fc_turbostat.sh` is marked incompatible whenever the CPU vendor is `AuthenticAMD` (turbostat is Intel-focused) even if `turbostat` itself is installed — use `fc_rapl.py` there instead.
+Notably, `fc_turbostat.sh` is marked incompatible whenever the CPU vendor is `AuthenticAMD` (turbostat is Intel-focused) even if `turbostat` itself is installed -- use `fc_rapl.py` there instead.
 
 ---
 
 ## [power-scripts/fc_pid.sh](../power-scripts/fc_pid.sh)
 
-Shared helper: resolves the PID of the Firecracker process that owns a given API socket. Used internally by `fc_pidstat.sh`, `fc_perf.sh`, `fc_ml_metrics.sh`, `fc_proc.py`, `fc_pressure.py`, and `fc_experiment.sh` — you won't normally call it directly.
+Shared helper: resolves the PID of the Firecracker process that owns a given API socket. Used internally by `fc_pidstat.sh`, `fc_perf.sh`, `fc_ml_metrics.sh`, `fc_proc.py`, `fc_pressure.py`, and `fc_experiment.sh` -- you won't normally call it directly.
 
 **Usage:**
 ```
 ./power-scripts/fc_pid.sh [SOCKET_PATH]   # default: /tmp/firecracker/0.socket
 ```
 
-Resolution order: `fuser` → `ss -xlp` → `lsof -t -U` → (only if exactly one Firecracker process exists) `pgrep -x firecracker`. Every candidate PID is verified against `/proc/<pid>/comm` (must be `firecracker` or `jailer`) before being accepted. If the socket can't be mapped to a PID and more than one Firecracker process is running, it refuses to guess and exits non-zero with diagnostics — install `fuser`, `ss`, or `lsof` so this never has to happen.
+Resolution order: `fuser` → `ss -xlp` → `lsof -t -U` → (only if exactly one Firecracker process exists) `pgrep -x firecracker`. Every candidate PID is verified against `/proc/<pid>/comm` (must be `firecracker` or `jailer`) before being accepted. If the socket can't be mapped to a PID and more than one Firecracker process is running, it refuses to guess and exits non-zero with diagnostics -- install `fuser`, `ss`, or `lsof` so this never has to happen.
 
 ---
 
 ## [power-scripts/fc_turbostat.sh](../power-scripts/fc_turbostat.sh)
 
-Records system-wide CPU power draw, frequency, temperature, and C-state residency using `turbostat`. x86 only — exits cleanly (code 0) on ARM with a pointer to `fc_arm_power.py`.
+Records system-wide CPU power draw, frequency, temperature, and C-state residency using `turbostat`. x86 only -- exits cleanly (code 0) on ARM with a pointer to `fc_arm_power.py`.
 
 **Requires:** `linux-tools-*` (`turbostat`), `sudo`.
 
@@ -73,7 +73,7 @@ sudo ./power-scripts/fc_turbostat.sh [SOCKET] [INTERVAL_SECS] [DURATION_SECS] [O
 | `DURATION_SECS` | Total recording duration in seconds | `60` |
 | `OUT_CSV` | Output CSV path | `turbostat_<timestamp>.csv` |
 
-**Output columns:** `timestamp`, `elapsed_s`, `package_watts`, `dram_watts`, `PkgTmp`, `Busy%`, `Bzy_MHz`, `TSC_MHz`, `CPU%c1`, `CPU%c6` — normalized by `fc_turbostat_to_csv.py` (below) into the same `*_watts` schema `fc_rapl.py` emits, so downstream tools can treat either as the power source.
+**Output columns:** `timestamp`, `elapsed_s`, `package_watts`, `dram_watts`, `PkgTmp`, `Busy%`, `Bzy_MHz`, `TSC_MHz`, `CPU%c1`, `CPU%c6` -- normalized by `fc_turbostat_to_csv.py` (below) into the same `*_watts` schema `fc_rapl.py` emits, so downstream tools can treat either as the power source.
 
 The script attempts three fallback strategies when `turbostat` encounters a `rapl_perf_init` assertion failure (common on some EC2 metal CPUs):
 1. Full columns with default RAPL path.
@@ -137,7 +137,7 @@ sudo ./power-scripts/fc_pidstat.sh [SOCKET] [INTERVAL_SECS] [DURATION_SECS] [OUT
 
 **Output columns:** `epoch`, `UID`, `PID`, `%usr`, `%system`, `%guest`, `%wait`, `%CPU`, `CPU_id`, `minflt_s`, `majflt_s`, `VSZ_KB`, `RSS_KB`, `%MEM`, `kB_rd_s`, `kB_wr_s`, `kB_ccwr_s`, `iodelay`, `cswch_s`, `nvcswch_s`, `Command`
 
-`pidstat` only takes whole-second intervals — sub-second `INTERVAL_SECS` still works elsewhere in the pipeline (e.g. `fc_experiment.sh` at 100 Hz) but this collector is capped at 1 Hz.
+`pidstat` only takes whole-second intervals -- sub-second `INTERVAL_SECS` still works elsewhere in the pipeline (e.g. `fc_experiment.sh` at 100 Hz) but this collector is capped at 1 Hz.
 
 ---
 
@@ -165,7 +165,7 @@ python3 power-scripts/fc_proc.py [--socket PATH] [--interval SECS] [--duration S
 
 ## [power-scripts/fc_perf.sh](../power-scripts/fc_perf.sh)
 
-Streams hardware PMU counters for the Firecracker process via `perf stat -I` — cycles, instructions, cache references/misses, branch misses, context switches, CPU migrations, and `kvm:kvm_exit`. Not RAPL — power comes from `fc_rapl.py`/`fc_turbostat.sh`, run alongside this rather than combined into one `perf` invocation (a `perf stat -p PID` run can't also read RAPL cleanly).
+Streams hardware PMU counters for the Firecracker process via `perf stat -I` -- cycles, instructions, cache references/misses, branch misses, context switches, CPU migrations, and `kvm:kvm_exit`. Not RAPL -- power comes from `fc_rapl.py`/`fc_turbostat.sh`, run alongside this rather than combined into one `perf` invocation (a `perf stat -p PID` run can't also read RAPL cleanly).
 
 **Requires:** `perf`, `sudo`, `fc_pid.sh`.
 
@@ -181,13 +181,13 @@ sudo ./power-scripts/fc_perf.sh [SOCKET] [INTERVAL_MS] [DURATION_SECS] [OUT_CSV]
 | `DURATION_SECS` | Total recording duration in seconds | `300` |
 | `OUT_CSV` | Output CSV path | `perf_<timestamp>.csv` |
 
-**Output columns (long format, one row per event per interval):** `time_s`, `value`, `unit`, `event`, `runtime_ns`, `pct_running`, `metric_value`, `metric_unit`. Written incrementally — a killed process still leaves partial data on disk. `<OUT_CSV base>.errlog` captures perf's own stderr for diagnostics.
+**Output columns (long format, one row per event per interval):** `time_s`, `value`, `unit`, `event`, `runtime_ns`, `pct_running`, `metric_value`, `metric_unit`. Written incrementally -- a killed process still leaves partial data on disk. `<OUT_CSV base>.errlog` captures perf's own stderr for diagnostics.
 
 ---
 
 ## [power-scripts/fc_ml_metrics.sh](../power-scripts/fc_ml_metrics.sh)
 
-A second, `perf`-based collector curated for power modeling: cycles, instructions, cache references/misses, LLC loads/misses (x86) or branch stats (ARM), branch instructions/misses, context switches, CPU migrations, and page faults, chosen per Bircher & John and McCullough et al. as the events that capture most CPU-power variance. Unlike `fc_perf.sh`'s long-format output, this pivots to one **wide** row per interval — more directly usable as ML features.
+A second, `perf`-based collector curated for power modeling: cycles, instructions, cache references/misses, LLC loads/misses (x86) or branch stats (ARM), branch instructions/misses, context switches, CPU migrations, and page faults, chosen per Bircher & John and McCullough et al. as the events that capture most CPU-power variance. Unlike `fc_perf.sh`'s long-format output, this pivots to one **wide** row per interval -- more directly usable as ML features.
 
 **Requires:** `perf`, `sudo`, `fc_pid.sh`, Python 3 (used internally for the pivot).
 
@@ -209,7 +209,7 @@ sudo ./power-scripts/fc_ml_metrics.sh [SOCKET] [INTERVAL_MS] [DURATION_SECS] [OU
 
 ## [power-scripts/fc_pressure.py](../power-scripts/fc_pressure.py)
 
-Samples cgroup v2 PSI (Pressure Stall Information) for the Firecracker process's cgroup — the fraction of time it was stalled on CPU, memory, or IO. High pressure correlates with power-saving C-state residency.
+Samples cgroup v2 PSI (Pressure Stall Information) for the Firecracker process's cgroup -- the fraction of time it was stalled on CPU, memory, or IO. High pressure correlates with power-saving C-state residency.
 
 **Requires:** Python 3, cgroup v2, `fc_pid.sh` or `lsof` for PID resolution.
 
@@ -231,7 +231,7 @@ sudo python3 power-scripts/fc_pressure.py [--socket PATH] [--interval SECS] [--d
 
 ## [power-scripts/fc_arm_power.py](../power-scripts/fc_arm_power.py)
 
-Power/sensor monitor for ARM hosts (Graviton, etc.), which don't expose RAPL. Reads whatever `/sys/class/hwmon/hwmon*/{energy,power,temp,in,fan}*_input` sensors exist. **On AWS Graviton metal there is currently no public per-socket power counter** — this will still run and capture temperatures/fan speeds/voltage rails if present, but may find nothing to report.
+Power/sensor monitor for ARM hosts (Graviton, etc.), which don't expose RAPL. Reads whatever `/sys/class/hwmon/hwmon*/{energy,power,temp,in,fan}*_input` sensors exist. **On AWS Graviton metal there is currently no public per-socket power counter** -- this will still run and capture temperatures/fan speeds/voltage rails if present, but may find nothing to report.
 
 **Requires:** Python 3.
 
@@ -275,7 +275,7 @@ python3 power-scripts/fc_plot_csv.py rapl.csv --out power.png --domains package-
 | `--rate` | (perf) Plot as per-second rate instead of raw per-interval counts | off |
 | `--format` | Force `rapl` or `perf` instead of auto-detecting | `auto` |
 | `--no-show` | Save image without opening a display window | off |
-| `--title` | Custom plot title | `RAPL power — <filename>` / `perf events — <filename>` |
+| `--title` | Custom plot title | `RAPL power -- <filename>` / `perf events -- <filename>` |
 
 RAPL plots annotate each curve with average wattage, peak wattage, and total energy in joules (average × duration).
 
@@ -285,7 +285,7 @@ RAPL plots annotate each curve with average wattage, peak wattage, and total ene
 
 Runs an end-to-end power-measurement experiment: launches the microVMs, starts every applicable collector, invokes the function N times, then stops the collectors and shuts the VMs down.
 
-**Requires:** `bc`, `sudo`, plus whichever collectors are installed (it skips the ones that aren't — see the scope table above for which run per-instance vs. host-wide).
+**Requires:** `bc`, `sudo`, plus whichever collectors are installed (it skips the ones that aren't -- see the scope table above for which run per-instance vs. host-wide).
 
 **Usage:**
 ```
@@ -332,9 +332,9 @@ If instances are already running it reuses them and leaves them up afterwards; i
 
 ## [power-scripts/fc_analyze_pkg.py](../power-scripts/fc_analyze_pkg.py)
 
-Turns one or more `fc_experiment.sh` output directories into plots and summary statistics. This is the actual results pipeline — everything above just collects CSVs; this is what reads them back.
+Turns one or more `fc_experiment.sh` output directories into plots and summary statistics. This is the actual results pipeline -- everything above just collects CSVs; this is what reads them back.
 
-> Its own docstring describes it as the "package-power variant of `fc_analyze.py`" for side-by-side comparison — **`fc_analyze.py` is an older script and has been removed as core power was inaccurate to cpu based invocations in firecracker** Use the `--power-domain` flag below (`package` or `core`) on this script instead; it covers both cases.
+> Its own docstring describes it as the "package-power variant of `fc_analyze.py`" for side-by-side comparison -- **`fc_analyze.py` is an older script and has been removed as core power was inaccurate to cpu based invocations in firecracker** Use the `--power-domain` flag below (`package` or `core`) on this script instead; it covers both cases.
 
 **Requires:** Python 3, `matplotlib`, `numpy`.
 
@@ -351,7 +351,7 @@ python3 power-scripts/fc_analyze_pkg.py EXP_DIR [EXP_DIR ...] [--out PLOTS_DIR] 
 | `--labels` | Labels for the workload-comparison graph, one per dir | dir names |
 | `--timeline-zoom-n` | Invocations shown in the full-resolution timeline zoom | `12` |
 
-Power data comes from `rapl.csv`, falling back to `turbostat.csv` (normalized by `fc_turbostat_to_csv.py`) when RAPL sysfs isn't available — e.g. on EC2 `.metal`. Invocation windows are read from `invocations.csv` and aligned onto the power trace's clock via shared wall-clock timestamps. SAAF telemetry, when present under `EXP_DIR/invocations/*.stdout.log`, supplies runtime and CPU-utilization numbers directly from the function's own reporting; cold starts (`newcontainer=1`) are excluded from all statistics.
+Power data comes from `rapl.csv`, falling back to `turbostat.csv` (normalized by `fc_turbostat_to_csv.py`) when RAPL sysfs isn't available -- e.g. on EC2 `.metal`. Invocation windows are read from `invocations.csv` and aligned onto the power trace's clock via shared wall-clock timestamps. SAAF telemetry, when present under `EXP_DIR/invocations/*.stdout.log`, supplies runtime and CPU-utilization numbers directly from the function's own reporting; cold starts (`newcontainer=1`) are excluded from all statistics.
 
 **Output** (in `--out`, default `plots/`):
 
@@ -370,4 +370,4 @@ Power data comes from `rapl.csv`, falling back to `turbostat.csv` (normalized by
 | `11_cross_run_stats.png` | Mean/std/CV of runtime, power, CPU across runs (needs 2+ `EXP_DIR`) |
 | `invocation_stats.txt` / `.md` / `.csv` | Per-invocation mean/std/CV for runtime, CPU%, energy, and power, pooled across all given dirs |
 
-A graph is silently skipped (with a one-line note on stdout) when its required input file or minimum sample count isn't met — e.g. no `07_correlation_heatmap.png` without `proc.csv`, no multi-run graphs with only one `EXP_DIR`.
+A graph is silently skipped (with a one-line note on stdout) when its required input file or minimum sample count isn't met -- e.g. no `07_correlation_heatmap.png` without `proc.csv`, no multi-run graphs with only one `EXP_DIR`.

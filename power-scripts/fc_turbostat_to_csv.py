@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-fc_turbostat_to_csv.py — normalize turbostat --Summary output into the same
+fc_turbostat_to_csv.py -- normalize turbostat --Summary output into the same
 CSV schema fc_rapl.py emits, so fc_analyze.py / fc_analyze_pkg.py can consume
 turbostat as a power source on hosts without RAPL sysfs (e.g. EC2 .metal).
 
@@ -63,7 +63,7 @@ def main():
                 writer.writeheader()
             continue
         if writer is None:
-            continue  # data before any header — skip
+            continue  # data before any header -- skip
         now = time.monotonic()
         if t0 is None:
             t0 = now - interval  # first sample lands at ~interval, matching fc_rapl.py

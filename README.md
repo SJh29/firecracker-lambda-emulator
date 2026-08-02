@@ -1,6 +1,18 @@
 # Firecracker Based Lambda Emulator
 
-An AWS Lambda emulator built on [Firecracker](https://github.com/firecracker-microvm/firecracker) microVMs, running actual AWS Lambda base images. In head-to-head benchmarking against real AWS Lambda on identical hardware, observed performance differs by approximately 0.5%.
+An AWS Lambda emulator built on [Firecracker](https://github.com/firecracker-microvm/firecracker) microVMs, running actual AWS Lambda base images. In head-to-head benchmarking against real AWS Lambda on identical hardware, observed performance differs by approximately 0.5% in SAAF metrics overall.
+
+## Fidelity vs. real AWS Lambda
+
+SAAF telemetry from the 502.graph-mst benchmark ([`function/function.py`](./function/function.py)), Firecracker vs. real AWS Lambda on matching CPU hardware (`cpuType` `2.50GHz`, n=10000 Firecracker invocations vs. 7234 Lambda invocations):
+
+![Runtime ECDF: Firecracker and AWS Lambda cumulative runtime distributions overlap almost exactly through the 99th percentile](docs/figs/fig3-runtime-ecdf-cpu-2.50GHz.png)
+
+![Core timing distributions: runtime and userRuntime differ by about 0.2%, process_time by about 3.5%, graph_generating_time by about 0.3%](docs/figs/fig2-core-timing-distributions-cpu-2.50GHz.png)
+
+![Signed percent difference by SAAF metric, Firecracker relative to AWS Lambda](docs/figs/fig1-percent-difference-cpu-2.50GHz.png)
+
+The metrics that reflect actual work (`runtime`, `userRuntime`, `cpuUser`) agree within ~1.5% -- that's the basis for the ~0.5% figure above. The large deltas at the bottom of the third chart (`cpuSteal`, `cpuSoftIrq`, `cpuIdle`, ...) are host CPU-accounting fields read from `/proc/stat` (see [`function/Inspector.py`](./function/Inspector.py)), not workload duration -- a single-tenant Firecracker microVM has essentially no steal time or softirq load to report, so those fields diverge from a shared-tenant Lambda sandbox without implying the benchmark itself ran differently.
 
 ## Initialization
 
@@ -13,7 +25,10 @@ Run on a fresh Ubuntu 22.04 host (EC2 metal recommended so cgroup v2 + RAPL powe
 ```bash
 # ── 0. Prerequisites (one-time, as a sudoer user) ──────────────────────────
 sudo apt-get update -y
-sudo apt-get install -y git git-lfs   # needed before clone
+sudo apt-get install -y git git-lfs          # needed before clone
+sudo apt-get install -y build-essential perl # needed by install_build.sh's
+                                              # static OpenSSL build; not yet
+                                              # installed by install_deps.sh
 
 git clone https://github.com/SJh29/firecracker-lambda-emulator.git
 cd firecracker-lambda-emulator
@@ -39,7 +54,7 @@ stat -fc %T /sys/fs/cgroup
 ```bash
 sudo ./run_firecracker.sh &   # writes /tmp/firecracker/0.socket
 sleep 2
-./function_scripts/invoke.sh   # should print the chacha20 benchmark result
+./function_scripts/invoke.sh   # should print the sebs502 mst graph gen benchmark result
 sudo ./kill_firecracker.sh
 
 # ── 4 concurrent microVMs ────────────────────────────────────
@@ -71,7 +86,11 @@ tar -czvf all_exp.tar.gz experiment_*
 
 ### Dependencies
 
-`git`, `git-lfs`, `curl`, `wget`, `jq`, `iproute2`, `iptables`, `e2fsprogs`, `sysstat`, `linux-tools-*`, `lsof`, `python3-matplotlib`, `sha256sum` / `shasum`, `tar`, `sudo` — all installed by `install_deps.sh`.
+Installed by `install_deps.sh`: `git`, `git-lfs`, `curl`, `wget`, `jq`, `iproute2`, `iptables`, `e2fsprogs`, `sysstat`, `linux-tools-*`, `lsof`, `python3-matplotlib`, `python3-numpy`.
+
+Assumed already present on the host (not installed by any script here): `sha256sum`/`shasum`, `tar`, `sudo`.
+
+**Not currently installed by any script, but required by `install_build.sh`'s static OpenSSL build:** `build-essential`, `perl`. Install these manually before running `install_build.sh` (see step 0 above) -- see [Install Scripts](./docs/install_docs.md) for detail.
 
 ## Concurrency
 
@@ -79,7 +98,7 @@ Instance `k` owns `/tmp/firecracker/<k>.socket`, a writable `/tmp` scratch drive
 
 ## Documentation
 
-- [Install Scripts](./docs/install_docs.md) — per-script breakdown of `install_deps.sh` → `install_verify.sh`
+- [Install Scripts](./docs/install_docs.md) -- per-script breakdown of `install_deps.sh` → `install_verify.sh`
 - [Configuration Files](./docs/config_files.md)
 - [Function Setup Scripts](./docs/function_scripts.md)
 - [Power Measurement Scripts](./docs/power_scripts.md)

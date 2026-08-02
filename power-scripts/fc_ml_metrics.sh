@@ -1,6 +1,6 @@
 #!/bin/bash
-# fc_ml_metrics.sh — perf events curated for power modeling.
-# Captures cycles, instructions, cache, memory, branch — outputs wide CSV
+# fc_ml_metrics.sh -- perf events curated for power modeling.
+# Captures cycles, instructions, cache, memory, branch -- outputs wide CSV
 # with one row per interval (suitable for ML ingestion).
 #
 # Usage: sudo fc_ml_metrics.sh [SOCKET] [INTERVAL_MS] [DURATION_SECS] [OUT_CSV]

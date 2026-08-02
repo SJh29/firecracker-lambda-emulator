@@ -24,10 +24,8 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/config.sh"
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/build.env"
 
 # ─── Static OpenSSL binary ───────────────────────────────────────────────────
-# The chacha20 benchmark shells out to openssl in the guest, which has none. A
-# static build drops into the rootfs as a single file with no library trail.
-# Paths are absolute so the build never depends on (or pollutes) the cwd, which
-# must stay the repo root for the rootfs build below.
+# The chacha20 benchmark shells out to openssl in the guest, which has none. 
+# Necessary for benchmarking functions
 if [[ -f "$OPENSSL_BIN" ]]; then
   echo "Static OpenSSL binary already built at $OPENSSL_BIN, skipping..."
 else
@@ -55,12 +53,6 @@ else
 fi
 
 # ─── Build AWS Lambda base image rootfs ──────────────────────────────────────
-# Built as $ROOTFS_IMAGE.partial and promoted only once the wrapper is injected,
-# so a failure part-way through leaves no $ROOTFS_IMAGE behind and the next run
-# rebuilds instead of silently booting a half-built, unbootable image.
-#
-# The staging tree and the source repo are each deleted as soon as they're
-# consumed — all three together are several GB.
 if [[ -f "$ROOTFS_IMAGE" ]]; then
   echo "Skipping rootfs build, already exists: $ROOTFS_IMAGE"
 else
@@ -91,9 +83,6 @@ else
   echo "Creating ext4 image..."
   sudo chown -R root:root lambda-rootfs
   # 1.5G leaves headroom for the vendored guest deps (igraph + bundled libs).
-  # The function's /tmp writes land on a per-instance scratch drive rather than
-  # here, and the file is sparse, so the extra size costs almost nothing — one
-  # read-only copy is shared by every microVM.
   sudo truncate -s 1536M "$IMG_PARTIAL"
   sudo mkfs.ext4 -d lambda-rootfs -F "$IMG_PARTIAL"
 
@@ -129,8 +118,8 @@ else
 
   sudo tee "$MOUNT_DIR/var/runtime/bootstrap" >/dev/null <<'WRAPPER'
 #!/bin/bash
-# Guest PID 1. Does the work Docker would normally do for a Lambda image —
-# pseudo-filesystems, environment, drives, network — then execs the real Lambda
+# Guest PID 1. Does the work Docker would normally do for a Lambda image --
+# pseudo-filesystems, environment, drives, network -- then execs the real Lambda
 # entrypoint.
 #
 # The rootfs and the function drive are shared read-only by every concurrent
@@ -164,7 +153,7 @@ export AWS_LAMBDA_FUNCTION_MEMORY_SIZE=$MEM_SIZE
 export CONFIG_VIRT_CPU_ACCOUNTING_GEN=y
 export CONFIG_IRQ_TIME_ACCOUNTING=y
 # __pycache__ writes next to modules would hit EROFS. Harmless, but each is a
-# wasted open() per import and forces a recompile every cold start — noise in
+# wasted open() per import and forces a recompile every cold start -- noise in
 # the power measurement.
 export PYTHONDONTWRITEBYTECODE=1
 
@@ -186,7 +175,7 @@ fi
 if [ $? -eq 0 ]; then
     echo "Mounted /dev/vdc at /tmp (rw)"
 else
-    echo "ERROR: Failed to mount /dev/vdc at /tmp — /tmp writes will fail (read-only root)"
+    echo "ERROR: Failed to mount /dev/vdc at /tmp -- /tmp writes will fail (read-only root)"
     ls -la /dev/vd* 2>/dev/null
 fi
 
@@ -209,9 +198,8 @@ WRAPPER
 
   # ─── Vendor guest Python deps into the rootfs ──────────────────────────────
   # Installed with the image's OWN pip under chroot, so the wheels match the
-  # guest exactly (cp310 / manylinux2014 / x86_64) — no host pip, no
-  # cross-compilation. They land in the guest's site-packages and are importable
-  # by any function (e.g. igraph for sebs_502).
+  # guest exactly (cp310 / manylinux2014 / x86_64). They land in the guest's 
+  # site-packages and are importable by any function (e.g. igraph for sebs_502).
   GUEST_REQS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/guest-requirements.txt"
   if [[ -s "$GUEST_REQS" ]]; then
     if [[ -x "$MOUNT_DIR/var/lang/bin/pip" ]]; then
@@ -239,7 +227,7 @@ WRAPPER
       }
       echo "Guest deps installed: $(tr '\n' ' ' <"$GUEST_REQS")"
     else
-      echo "WARNING: /var/lang/bin/pip not found in rootfs — skipping guest deps." >&2
+      echo "WARNING: /var/lang/bin/pip not found in rootfs -- skipping guest deps." >&2
     fi
   fi
 

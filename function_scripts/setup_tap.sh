@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# setup_tap.sh — Host TAP interfaces + NAT
+# setup_tap.sh -- Host TAP interfaces + NAT
 #
 # Creates one TAP device per Firecracker instance, each on its own /30 so the
 # host has an unambiguous route to every guest. Instance k gets tap<k> with host

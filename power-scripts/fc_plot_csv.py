@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-fc_plot_csv.py — plot a fc_rapl.py or fc_perf.sh CSV.
+fc_plot_csv.py -- plot a fc_rapl.py or fc_perf.sh CSV.
 
 Auto-detects format:
   - fc_rapl.py CSV: wide format with *_watts columns
@@ -69,7 +69,7 @@ def plot_rapl(rows, args, plt):
 
     ax.set_xlabel("Elapsed (s)")
     ax.set_ylabel("Power (W)")
-    ax.set_title(args.title or f"RAPL power — {Path(args.csv).name}")
+    ax.set_title(args.title or f"RAPL power -- {Path(args.csv).name}")
     ax.grid(True, alpha=0.3)
     ax.legend(loc="best", fontsize=9)
     fig.tight_layout()
@@ -105,7 +105,7 @@ def plot_perf(rows, args, plt):
 
     fig, axes = plt.subplots(n, 1, figsize=(12, 2.2 * n), sharex=True)
     if n == 1: axes = [axes]
-    fig.suptitle(args.title or f"perf events — {Path(args.csv).name}",
+    fig.suptitle(args.title or f"perf events -- {Path(args.csv).name}",
                  fontsize=13, fontweight="bold")
 
     for ax, ev in zip(axes, events):

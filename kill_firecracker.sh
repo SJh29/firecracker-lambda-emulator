@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# kill_firecracker.sh — Cleanly stop all running Firecracker microVMs
+# kill_firecracker.sh -- Cleanly stop all running Firecracker microVMs
 #
 # Discovers the running instances from the sockets on disk (rather than being
 # told how many there are), sends each one a graceful shutdown, then removes the
@@ -44,7 +44,7 @@ else
     [[ -f "$pidfile" ]] || continue
     pid="$(cat "$pidfile")"
     if sudo kill -0 "$pid" 2>/dev/null; then
-      warn "instance $k (pid $pid) still up after Ctrl-Alt-Del — killing"
+      warn "instance $k (pid $pid) still up after Ctrl-Alt-Del -- killing"
       sudo kill -9 "$pid" 2>/dev/null || true
     fi
   done

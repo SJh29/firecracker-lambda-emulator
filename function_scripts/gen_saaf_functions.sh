@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# gen_saaf_functions.sh — write one SAAF function JSON per running instance.
+# gen_saaf_functions.sh -- write one SAAF function JSON per running instance.
 #
 # Each file points at that VM's RIE endpoint, so a separate faas_runner process
 # can be aimed at each one.

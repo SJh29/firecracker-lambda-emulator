@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-fc_pressure.py — sample cgroup PSI (Pressure Stall Information).
+fc_pressure.py -- sample cgroup PSI (Pressure Stall Information).
 
 PSI shows what fraction of time the cgroup was stalled on CPU/memory/IO.
 High pressure correlates with power-saving C-state residency.

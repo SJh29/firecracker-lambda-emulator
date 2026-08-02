@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# install_cgroup.sh — Verify cgroup v2 prerequisites for per-instance Firecracker
+# install_cgroup.sh -- Verify cgroup v2 prerequisites for per-instance Firecracker
 #                     CPU quota enforcement.
 #
 # Each microVM is launched by run_firecracker.sh inside its own leaf cgroup,

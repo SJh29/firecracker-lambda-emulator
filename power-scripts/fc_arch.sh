@@ -1,5 +1,5 @@
 #!/bin/bash
-# fc_arch.sh — detect arch and available power sources.
+# fc_arch.sh -- detect arch and available power sources.
 # Prints a short summary and a JSON-ish line for scripting.
 #
 # Usage: ./fc_arch.sh
@@ -76,7 +76,7 @@ if [[ "$FAMILY" == arm ]]; then
     if [[ "$HAS_HWMON_ENERGY" == True ]]; then
         echo -e "    \xe2\x9c\x93 fc_arm_power.py   (hwmon energy sensors found)"
     else
-        echo "    WARN: fc_arm_power.py   (no hwmon energy sensors — may run empty)"
+        echo "    WARN: fc_arm_power.py   (no hwmon energy sensors -- may run empty)"
     fi
 fi
 if [[ "$FAMILY" == x86 && "$HAS_TURBOSTAT" == True &&  ! "$VENDOR" == "AuthenticAMD" ]]; then

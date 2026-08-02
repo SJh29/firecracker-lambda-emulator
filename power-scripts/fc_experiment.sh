@@ -1,5 +1,5 @@
 #!/bin/bash
-# fc_experiment.sh — run an end-to-end power-measurement experiment.
+# fc_experiment.sh -- run an end-to-end power-measurement experiment.
 #
 # 1. Launch run_firecracker.sh (N concurrent microVMs) in a separate terminal
 # 2. Wait for every socket
@@ -62,7 +62,7 @@ CAPTURE=1
 EST_INVOKE_SECS=10   # estimated seconds per invocation; sizes collector duration
 MEM_MIB=""           # if set, forwarded to run_firecracker.sh as `-m MEM_MIB`
 RATE_HZ=100          # collector sampling rate; see -r. Sub-second invocations
-                     # need many samples per window — 1 Hz is far too coarse.
+                     # need many samples per window -- 1 Hz is far too coarse.
 
 while getopts "n:N:s:l:I:d:r:o:t:E:m:qh" opt; do
     case $opt in
@@ -83,7 +83,7 @@ while getopts "n:N:s:l:I:d:r:o:t:E:m:qh" opt; do
 done
 
 # Instance addressing (fc_socket, fc_guest_ip, fc_instances, ...) comes from
-# common.sh, which honours API_SOCKET_FOLDER — set it before sourcing.
+# common.sh, which honours API_SOCKET_FOLDER -- set it before sourcing.
 export API_SOCKET_FOLDER="$SOCKET_DIR"
 source "$ROOT/common.sh"
 
@@ -92,9 +92,9 @@ source "$ROOT/common.sh"
 fc_check_instance "$(( NUM_VMS - 1 ))" || exit 1
 
 # Derive per-collector interval arguments from the sampling rate.
-#   SEC_INT  — float seconds for the Python collectors (proc/pressure/rapl)
-#   MS_INT   — integer milliseconds for perf (-I); perf's floor is 10ms
-#   COARSE_INT — integer seconds for pidstat, which take whole-second
+#   SEC_INT  -- float seconds for the Python collectors (proc/pressure/rapl)
+#   MS_INT   -- integer milliseconds for perf (-I); perf's floor is 10ms
+#   COARSE_INT -- integer seconds for pidstat, which take whole-second
 #                intervals (their scripts do integer division on it)
 SEC_INT=$(echo "scale=6; 1/$RATE_HZ" | bc -l)
 MS_INT=$(printf '%.0f' "$(echo "1000/$RATE_HZ" | bc -l)")
@@ -146,7 +146,7 @@ RUNNING=($(fc_instances))
 
 # Diagnostics on a failed launch have to come from two places. FC_LOG captures
 # the launcher's own messages, but Firecracker's log lines and the guest console
-# no longer flow through this pipe — run_firecracker.sh redirects each instance
+# no longer flow through this pipe -- run_firecracker.sh redirects each instance
 # to logs/<timestamp>/console-<k>.log, because its stdout is non-blocking and a
 # full pipe would silently drop those bytes with EAGAIN. So tail both.
 fc_log_tail() {
@@ -168,7 +168,7 @@ else
         echo "  Stop them first: sudo $ROOT/kill_firecracker.sh" >&2
         exit 1
     fi
-    echo "      no running Firecracker found — launching $NUM_VMS instance(s)..."
+    echo "      no running Firecracker found -- launching $NUM_VMS instance(s)..."
     if [[ "$TERM_KIND" == "auto" ]]; then
         if   command -v gnome-terminal &>/dev/null; then TERM_KIND=gnome-terminal
         elif command -v konsole        &>/dev/null; then TERM_KIND=konsole
@@ -342,7 +342,7 @@ echo
 echo "[6/6] Stopping Firecracker..."
 if (( FC_STARTED )); then
     # Graceful shutdown of every VM, plus teardown of taps and rootfs copies.
-    # sudo drops the environment, so pass the socket dir through explicitly —
+    # sudo drops the environment, so pass the socket dir through explicitly --
     # otherwise a custom -s would be lost and it would clean the default dir.
     sudo API_SOCKET_FOLDER="$SOCKET_DIR" bash "$ROOT/kill_firecracker.sh" || true
     for pid in "${FC_PIDS[@]}"; do
@@ -354,11 +354,11 @@ if (( FC_STARTED )); then
         bg)     [[ -f "$OUTDIR/firecracker.pid" ]] && sudo kill "$(cat "$OUTDIR/firecracker.pid")" 2>/dev/null || true ;;
     esac
 else
-    echo "      instances were already running before this run — leaving them up"
+    echo "      instances were already running before this run -- leaving them up"
 fi
 
 echo
 echo "═══════════════════════════════════════════════════════════"
-echo "  Done — output: $OUTDIR/"
+echo "  Done -- output: $OUTDIR/"
 echo "═══════════════════════════════════════════════════════════"
 ls -la "$OUTDIR/"

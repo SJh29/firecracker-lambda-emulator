@@ -1,5 +1,5 @@
 #!/bin/bash
-# fc_pidstat.sh — record per-process CPU, memory, IO, threads with pidstat.
+# fc_pidstat.sh -- record per-process CPU, memory, IO, threads with pidstat.
 #
 # Usage: sudo fc_pidstat.sh [SOCKET] [INTERVAL_SECS] [DURATION_SECS] [OUT_CSV]
 #   defaults: /tmp/firecracker/0.socket  1  60  pidstat_<ts>.csv

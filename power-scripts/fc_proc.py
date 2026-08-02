@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-fc_proc.py — sample /proc/<pid>/{stat,status,io,net/dev} → CSV.
-Gives per-process CPU%, memory, IO bytes, net bytes — no external tools needed.
+fc_proc.py -- sample /proc/<pid>/{stat,status,io,net/dev} → CSV.
+Gives per-process CPU%, memory, IO bytes, net bytes -- no external tools needed.
 
 Usage: sudo fc_proc.py [--socket PATH] [--interval SECS] [--duration SECS] [--out CSV]
 """

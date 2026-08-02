@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-fc_arm_power.py — power monitor for ARM systems (Graviton, etc).
+fc_arm_power.py -- power monitor for ARM systems (Graviton, etc).
 
 ARM CPUs don't expose RAPL. Power data, when available, comes from:
   - /sys/class/hwmon/hwmon*/energy*_input  (microjoules)
@@ -78,7 +78,7 @@ def main():
     sensors = discover_sensors()
     if not sensors:
         sys.exit("ERROR: no hwmon sensors found under /sys/class/hwmon. "
-                 "On Graviton this is expected — power data is not exposed.")
+                 "On Graviton this is expected -- power data is not exposed.")
 
     print(f"[arm_power] found {len(sensors)} sensors:")
     for label, _, _, _ in sensors[:20]:

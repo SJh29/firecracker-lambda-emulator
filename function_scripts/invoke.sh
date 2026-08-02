@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# invoke.sh — Invoke the Lambda function via the RIE HTTP endpoint.
+# invoke.sh -- Invoke the Lambda function via the RIE HTTP endpoint.
 #
 # POSTs the JSON payload directly to the RIE invocation endpoint over the TAP
 # network. Prints the response body and exits non-zero on function errors.

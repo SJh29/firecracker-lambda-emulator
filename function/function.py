@@ -3,10 +3,6 @@ def handler(request, context):
     # Dispatch between two benchmarks based on the request. The chacha20 cipher
     # benchmark runs when method=chacha20 is present; anything else runs the
     # SeBS 502.graph-mst (Barabasi graph + spanning tree) benchmark.
-    #
-    # "present" here means the selected cipher method is chacha20 — the invoke
-    # tooling sends {"method": "chacha20", ...}. To flip the default, change the
-    # condition below.
     method = str(request.get('method', '')).lstrip('-').lower()
     if method == 'chacha20':
         return chacha20_benchmark(request, context)
@@ -38,20 +34,12 @@ def chacha20_benchmark(request, context):
     req_password = str(request.get('password', 'benchmarkpass'))
 
     blocksize = 8192000  # 8 MB cleartext payload
-    # Deterministic payload: seeding the RNG makes every invocation (and every
-    # environment) encrypt byte-identical cleartext, which is required for a
-    # fair cross-environment fidelity comparison. random.randbytes is used
-    # instead of random.choices because it is ~35x faster, so the measured time
-    # reflects the CIPHER work rather than Python RNG overhead — while remaining
-    # fully deterministic under a fixed seed. (random.randbytes needs Py3.9+.)
     random.seed(request.get('seed', 42))
     cleartext = random.randbytes(blocksize)
     with open('/tmp/cleartext', 'wb') as f:
         f.write(cleartext)
 
-    # Disable CPU crypto acceleration (AES-NI / ARM crypto extensions) so the
-    # cipher runs on the general-purpose pipeline — the basis for the
-    # cross-architecture fidelity comparison.
+    # Disable CPU crypto acceleration (AES-NI / ARM crypto extensions)
     os.environ["OPENSSL_armcap"]   = "0"
     os.environ["OPENSSL_ia32cap"]  = "~0x20000000"
 
@@ -92,10 +80,7 @@ def chacha20_benchmark(request, context):
 def sebs_502(request, context):
     # SeBS 502.graph-mst: build a Barabasi–Albert graph of `size` vertices and
     # compute a spanning tree. `size` is required in the request.
-    #
-    # NOTE: this repo bundles Inspector.py directly at /var/task, so it's
-    # imported as `from Inspector import Inspector` rather than the SeBS/SAAF
-    # `from SAAF import Inspector`. `igraph` is vendored into the guest rootfs by
+    #`igraph` is vendored into the guest rootfs by
     # install_build.sh (see guest-requirements.txt), so it's importable here
     # after the rootfs is (re)built.
     from Inspector import Inspector

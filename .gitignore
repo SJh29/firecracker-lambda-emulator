@@ -19,7 +19,6 @@ test_function_drive.sh
 *.zip
 *.tgz
 *.csv
-*.png
 run*/
 test*
 plots*/

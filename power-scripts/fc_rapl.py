@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-fc_rapl.py — sample RAPL power-cap energy counters and emit CSV.
+fc_rapl.py -- sample RAPL power-cap energy counters and emit CSV.
 
 RAPL is socket-wide, but it's the most reliable source of real power data
 when turbostat isn't usable.

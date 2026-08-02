@@ -24,7 +24,7 @@ Installs all host-side APT packages required by the remaining scripts. Must be r
 
 If an exact `linux-tools-$(uname -r)` package exists it is also installed so that `turbostat` matches the running kernel.
 
-> **Gap:** `install_build.sh` compiles a static OpenSSL binary from source (`./Configure && make`) and this script does not install a compiler toolchain for it. Install `build-essential` and `perl` manually before running `install_build.sh` — see its section below.
+> **Gap:** `install_build.sh` compiles a static OpenSSL binary from source (`./Configure && make`) and this script does not install a compiler toolchain for it. Install `build-essential` and `perl` manually before running `install_build.sh` -- see its section below.
 
 ---
 
@@ -56,7 +56,7 @@ Downloads all binary artifacts needed to build the microVM environment.
 
 Builds the rootfs image from the downloaded Lambda base image layers and extracts the Firecracker binaries.
 
-**Requires:** `aws-lambda-base-images/` (or a pre-built `aws_baseimage.ext4`), Firecracker archive + checksum, `tmp/busybox`, OpenSSL source tarball, and `build.env` — all produced by `install_download.sh`. **Also requires a C compiler toolchain (`build-essential`) and `perl` on the host**, for the static OpenSSL build below — `install_deps.sh` does not currently install these; install them manually first (see [install_deps.sh](#install_depssh) above).
+**Requires:** `aws-lambda-base-images/` (or a pre-built `aws_baseimage.ext4`), Firecracker archive + checksum, `tmp/busybox`, OpenSSL source tarball, and `build.env` -- all produced by `install_download.sh`. **Also requires a C compiler toolchain (`build-essential`) and `perl` on the host**, for the static OpenSSL build below -- `install_deps.sh` does not currently install these; install them manually first (see [install_deps.sh](#install_depssh) above).
 
 **Produces:**
 
@@ -69,7 +69,7 @@ Builds the rootfs image from the downloaded Lambda base image layers and extract
 | `jailer` | Renamed jailer binary in the current directory |
 
 **Build steps:**
-1. Builds a static OpenSSL binary from the source tarball (`./Configure no-shared no-dso -static linux-x86_64 && make`) — skipped if `OPENSSL_BIN` already exists. The AWS base image ships no `openssl`, and the guest's chacha20 benchmark (`function/function.py`) shells out to it.
+1. Builds a static OpenSSL binary from the source tarball (`./Configure no-shared no-dso -static linux-x86_64 && make`) -- skipped if `OPENSSL_BIN` already exists. The AWS base image ships no `openssl`, and the guest's chacha20 benchmark (`function/function.py`) shells out to it.
 2. Extracts all `x86_64/*.tar.xz` layers from `aws-lambda-base-images/` into a staging directory.
 3. Creates a 1.5 GB ext4 image from the staging directory with `mkfs.ext4`.
 4. Mounts the image and copies in the static `busybox` and `openssl` binaries, then injects a bootstrap wrapper at `/var/runtime/bootstrap` that mounts pseudo-filesystems, configures the guest network, mounts the function drive read-only (`/dev/vdb → /var/task`) and the writable scratch drive (`/dev/vdc → /tmp`), and then execs the Lambda entrypoint. It also bakes a static `/etc/resolv.conf` into the image at build time so the read-only rootfs never needs a runtime DNS write.
@@ -78,10 +78,10 @@ Builds the rootfs image from the downloaded Lambda base image layers and extract
 
 **Notes:**
 - Busybox is necessary as a standalone binary to set up ip and mount the function drive; openssl is necessary as a standalone binary for the chacha20 benchmark.
-- The rootfs is 1.5 GB to leave room for the vendored deps. The function's `/tmp` writes no longer land here — they go to the per-instance scratch drive — so this size is just runtime + deps. If a large `guest-requirements.txt` overflows it, raise the `truncate -s` size in `install_build.sh` and rebuild.
+- The rootfs is 1.5 GB to leave room for the vendored deps. The function's `/tmp` writes no longer land here -- they go to the per-instance scratch drive -- so this size is just runtime + deps. If a large `guest-requirements.txt` overflows it, raise the `truncate -s` size in `install_build.sh` and rebuild.
 - Alternative rootfs may have these binaries present, but python3.10 AWS Baseimage used in this repository doesn't.
-- The bootstrap takes the guest's address from the kernel cmdline (`guest_ip=` / `gateway=`, written per instance by `run_firecracker.sh`), falling back to `172.16.0.2/30` via `172.16.0.1` when they're absent. This is what lets concurrent microVMs each hold a distinct IP — **a rootfs built before this change will bring every guest up as `172.16.0.2`, so rebuild it before running more than one instance.**
-- **The rootfs is mounted read-only and shared by every concurrent microVM.** The guest's only writable path is `/tmp`, backed by a per-instance scratch drive (`/dev/vdc`) — same constraint as real Lambda, where `/var/task` is read-only and `/tmp` is the sole writable location. A function that writes anywhere outside `/tmp` (e.g. next to its own code in `/var/task`) will get `EROFS`. `PYTHONDONTWRITEBYTECODE=1` is set so Python doesn't attempt `__pycache__` writes to the read-only rootfs on every cold start.
+- The bootstrap takes the guest's address from the kernel cmdline (`guest_ip=` / `gateway=`, written per instance by `run_firecracker.sh`), falling back to `172.16.0.2/30` via `172.16.0.1` when they're absent. This is what lets concurrent microVMs each hold a distinct IP -- **a rootfs built before this change will bring every guest up as `172.16.0.2`, so rebuild it before running more than one instance.**
+- **The rootfs is mounted read-only and shared by every concurrent microVM.** The guest's only writable path is `/tmp`, backed by a per-instance scratch drive (`/dev/vdc`) -- same constraint as real Lambda, where `/var/task` is read-only and `/tmp` is the sole writable location. A function that writes anywhere outside `/tmp` (e.g. next to its own code in `/var/task`) will get `EROFS`. `PYTHONDONTWRITEBYTECODE=1` is set so Python doesn't attempt `__pycache__` writes to the read-only rootfs on every cold start.
 - The function drive is mounted read-only so a single `function.ext4` can be shared by every concurrent microVM (Lambda's `/var/task` is read-only anyway).
 ---
 
@@ -92,12 +92,12 @@ Verifies cgroup v2 prerequisites for per-instance CPU quota enforcement and enab
 | Check / action | Detail |
 |---|---|
 | `/sys/fs/cgroup` is `cgroup2fs` | Aborts if the host is on cgroup v1 |
-| `cpu` and `cpuset` listed in `/sys/fs/cgroup/cgroup.controllers` | Host kernel exposes both controllers — `cpu` backs the quota, `cpuset` backs per-instance CPU pinning |
+| `cpu` and `cpuset` listed in `/sys/fs/cgroup/cgroup.controllers` | Host kernel exposes both controllers -- `cpu` backs the quota, `cpuset` backs per-instance CPU pinning |
 | `cpu` and `cpuset` listed in `/sys/fs/cgroup/cgroup.subtree_control` | Enables each via `echo +cpu` / `echo +cpuset` if not already set, so child cgroups can write `cpu.max` / `cpuset.cpus` |
 
 The cgroups themselves are created on demand by `run_firecracker.sh`: each microVM gets its own leaf cgroup, `/sys/fs/cgroup/firecracker/vm<k>`, so concurrent instances get **independent** quotas and CPU pinning rather than sharing one. (cgroup v2 forbids processes in a cgroup that has children, so the launcher stays out of the parent and each VM enrols itself in its own leaf.) `cpu.max` is derived from `vm_config.template.json`'s `mem_size_mib` at the AWS Lambda ratio of **1 full vCPU per 1769 MB of guest memory**. When guest memory exceeds 1769 MB, `run_firecracker.sh` also raises `vcpu_count` to `ceil(mem_size_mib / 1769)` so the guest can use the additional host CPU time it has been granted.
 
-> The quota is written as `max` by default (i.e. unlimited) — set `CPU_MAX=$CPU_QUOTA_US` in `run_firecracker.sh`, or export `CPU_MAX`, to enforce it.
+> The quota is written as `max` by default (i.e. unlimited) -- set `CPU_MAX=$CPU_QUOTA_US` in `run_firecracker.sh`, or export `CPU_MAX`, to enforce it.
 
 ---
 
