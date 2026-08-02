@@ -18,6 +18,10 @@ Static configuration sourced by all three install scripts. Edit this file to cha
 | `BUSYBOX_URL` | URL for the static busybox binary injected into the guest rootfs | `https://busybox.net/downloads/binaries/1.35.0-x86_64-linux-musl/busybox` |
 | `TMP_DIR` | Repo-local scratch directory for downloads that aren't checked in (git-ignored) | `<repo>/tmp` |
 | `BUSYBOX_PATH` | Destination path for the downloaded busybox binary on the host | `${TMP_DIR}/busybox` |
+| `OPENSSL_URL` | Source tarball URL for the OpenSSL version `install_build.sh` compiles statically | `openssl-3.5.7` release tarball |
+| `OPENSSL_TARBALL` | Download destination for the OpenSSL source tarball | `/tmp/openssl-3.5.7.tar.gz` |
+| `OPENSSL_SRC_DIR` | Directory the tarball is extracted into and built from | `/tmp/openssl` |
+| `OPENSSL_BIN` | Path to the resulting static `openssl` binary, copied into the rootfs at build time | `/tmp/openssl/apps/openssl` |
 | `ROOTFS_IMAGE` | Filename of the ext4 rootfs image produced by `install_build.sh` | `aws_baseimage.ext4` |
 
 ---
