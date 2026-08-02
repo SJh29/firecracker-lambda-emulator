@@ -5,8 +5,8 @@
 # driver to CPUs no guest is using, and runs it.
 #
 # Usage: ./run_saaf_experiment.sh [-e EXPERIMENT] [-o OUTDIR] [-N NAME]
-#   -e EXPERIMENT  Experiment JSON (default: <repo>/saaf/experiment-fidelity.json).
-#   -o OUTDIR      Results directory (default: <repo>/saaf/results/<timestamp>).
+#   -e EXPERIMENT  Experiment JSON (default: <repo>/saaf-experiment/experiment-fidelity.json).
+#   -o OUTDIR      Results directory (default: <repo>/saaf-experiment/results/<timestamp>).
 #   -N NAME        Report file prefix (default: firecracker).
 #
 # Env: SAAF_DIR  Path to the SAAF checkout (default: <repo>/SAAF).
@@ -31,7 +31,7 @@ while getopts "e:o:N:h" opt; do
   esac
 done
 
-OUTDIR="${OUTDIR:-$SCRIPT_DIR/saaf/results/$(date +%Y%m%d-%H%M%S)}"
+OUTDIR="${OUTDIR:-$SCRIPT_DIR/saaf-experiment/results/$(date +%Y%m%d-%H%M%S)}"
 
 # ── Preflight ───────────────────────────────────────────────────────────────
 [[ -f "$SAAF_DIR/test/tools/report_generator.py" ]] || {

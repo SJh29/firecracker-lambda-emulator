@@ -11,7 +11,7 @@
 # 6. Kill Firecracker
 #
 # Per-PID collectors (proc, pidstat, perf, ml_features, pressure) run once per
-# instance; host-wide ones (rapl, turbostat, arm_power, battery) run once for
+# instance; host-wide ones (rapl, turbostat, arm_power) run once for
 # the whole host, since RAPL and turbostat measure the package, not a process.
 # With N>1, per-instance output lands in <outdir>/vm<k>/; with N=1 it stays flat
 # so the existing analyzers keep working unchanged.
@@ -94,7 +94,7 @@ fc_check_instance "$(( NUM_VMS - 1 ))" || exit 1
 # Derive per-collector interval arguments from the sampling rate.
 #   SEC_INT  — float seconds for the Python collectors (proc/pressure/rapl)
 #   MS_INT   — integer milliseconds for perf (-I); perf's floor is 10ms
-#   COARSE_INT — integer seconds for pidstat/battery, which take whole-second
+#   COARSE_INT — integer seconds for pidstat, which take whole-second
 #                intervals (their scripts do integer division on it)
 SEC_INT=$(echo "scale=6; 1/$RATE_HZ" | bc -l)
 MS_INT=$(printf '%.0f' "$(echo "1000/$RATE_HZ" | bc -l)")
@@ -258,8 +258,8 @@ for (( k=0; k<NUM_VMS; k++ )); do
         start "ml_features$tag" sudo bash "$DIR/fc_ml_metrics.sh" "$sock" "$MS_INT" "$TOTAL_DURATION" "$out/ml_features.csv"
 done
 
-# Host-wide collectors: RAPL and turbostat measure the whole package, and the
-# battery gauge the whole machine — one copy each, no matter how many VMs.
+# Host-wide collectors: RAPL and turbostat measure the whole package
+# copy each, no matter how many VMs.
 # With N>1 their totals cover all instances together; attribute per-VM energy
 # using the per-instance proc/perf traces.
 if [[ "$ARCH" == "x86_64" || "$ARCH" == "amd64" ]]; then
@@ -276,12 +276,6 @@ if [[ "$ARCH" == "aarch64" || "$ARCH" == "arm64" ]]; then
     ls /sys/class/hwmon/hwmon*/*_input &>/dev/null && \
         start arm_power sudo python3 "$DIR/fc_arm_power.py" --socket "$(fc_socket 0)" -i "$SEC_INT" -d "$TOTAL_DURATION" -o "$OUTDIR/arm_power.csv"
 fi
-# Battery gauges refresh on the order of seconds, so sub-second sampling adds
-# nothing — keep it at COARSE_INT.
-ls /sys/class/power_supply/BAT* &>/dev/null && \
-    start battery sudo python3 "$DIR/fc_battery.py" --socket "$(fc_socket 0)" -i "$COARSE_INT" -d "$TOTAL_DURATION" -o "$OUTDIR/battery.csv"
-
-echo
 sleep 8  # baseline samples before first invocation
 
 # ── 4. Invocations ───────────────────────────────────────

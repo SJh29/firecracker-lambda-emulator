@@ -9,7 +9,7 @@
 #   -i INSTANCE  Instance id to invoke (default: 0)
 #   -a           Invoke every running instance concurrently and wait for all of
 #                them. Exits non-zero if any invocation fails.
-#   -p PAYLOAD   JSON payload (default: the chacha20 benchmark below)
+#   -p PAYLOAD   JSON payload
 #   -t TIMEOUT   Seconds to wait for a response (default: 300)
 
 source "$(dirname "${BASH_SOURCE[0]}")/../common.sh"
