@@ -1,0 +1,34 @@
+# ─── Firecracker release ─────────────────────────────────────────────────────
+# Base URL for Firecracker GitHub releases. The scripts append /latest,
+# /download/<version>/..., etc.
+RELEASE_URL="https://github.com/firecracker-microvm/firecracker/releases"
+ 
+# ─── Kernel (Firecracker CI artifacts on S3) ─────────────────────────────────
+# Bucket listing endpoint (used to discover the latest vmlinux-* key).
+KERNEL_S3_BUCKET_URL="http://spec.ccfc.min.s3.amazonaws.com"
+# Download base for fetching a specific kernel key.
+KERNEL_DOWNLOAD_BASE="https://s3.amazonaws.com/spec.ccfc.min"
+ 
+# ─── AWS Lambda base image source ────────────────────────────────────────────
+LAMBDA_REPO_URL="https://github.com/aws/aws-lambda-base-images.git"
+LAMBDA_REPO_BRANCH="python3.10"
+LAMBDA_REPO_ARCH_DIR="x86_64"
+LAMBDA_API_URL="https://api.github.com/repos/aws/aws-lambda-base-images"
+ 
+# ─── Local scratch dir (git-ignored) ─────────────────────────────────────────
+# Downloads that aren't part of the repo but should live next to it rather than
+# in the system /tmp (which gets cleared between reboots).
+TMP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/tmp"
+
+# ─── busybox (injected into the guest rootfs) ────────────────────────────────
+BUSYBOX_URL="https://busybox.net/downloads/binaries/1.35.0-x86_64-linux-musl/busybox"
+BUSYBOX_PATH="${TMP_DIR}/busybox"
+
+# ─── static OpenSSL binary ─────────────────────
+OPENSSL_URL="https://github.com/openssl/openssl/releases/download/openssl-3.5.7/openssl-3.5.7.tar.gz"
+OPENSSL_TARBALL="/tmp/openssl-3.5.7.tar.gz"   # source tarball download target
+OPENSSL_SRC_DIR="/tmp/openssl"                # source extracted + built here
+OPENSSL_BIN="/tmp/openssl/apps/openssl"       # resulting static binary
+# ─── Output filenames ────────────────────────────────────────────────────────
+# The final rootfs image produced by part 2 and verified by part 3.
+ROOTFS_IMAGE="aws_baseimage.ext4"
