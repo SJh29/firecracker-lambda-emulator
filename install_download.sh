@@ -90,13 +90,6 @@ else
   echo "Downloading busybox..."
   wget -O "$BUSYBOX_PATH" "$BUSYBOX_URL"
 fi
-if [[ -f "$OPENSSL_TARBALL" ]]; then
-  echo "Skipping OpenSSL download, $OPENSSL_TARBALL already exists."
-else
-  echo "Downloading OpenSSL source tarball..."
-  curl -L -o "$OPENSSL_TARBALL" "$OPENSSL_URL"
-fi
-
 # ─── Firecracker release archive + checksum ──────────────────────────────────
 ARCHIVE="firecracker-${LATEST_VERSION}-${ARCH}.tgz"
 SHA256="${ARCHIVE}.sha256.txt"

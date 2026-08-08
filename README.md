@@ -4,7 +4,7 @@ An AWS Lambda emulator built on [Firecracker](https://github.com/firecracker-mic
 
 ## Fidelity vs. real AWS Lambda
 
-SAAF telemetry from the 502.graph-mst benchmark ([`function/function.py`](./function/function.py)), Firecracker vs. real AWS Lambda on matching CPU hardware (`cpuType` `2.50GHz`, n=10000 Firecracker invocations vs. 7234 Lambda invocations):
+SAAF telemetry from the 502.graph-mst benchmark ([`function/benchmark/graph_mst.py`](./function/benchmark/graph_mst.py), dispatched via [`function/handler.py`](./function/handler.py)), Firecracker vs. real AWS Lambda on matching CPU hardware (`cpuType` `2.50GHz`, n=10000 Firecracker invocations vs. 7234 Lambda invocations):
 
 <table>
 <tr>
@@ -33,9 +33,7 @@ Run on a fresh Ubuntu 22.04 host (EC2 metal recommended so cgroup v2 + RAPL powe
 # ── 0. Prerequisites (one-time, as a sudoer user) ──────────────────────────
 sudo apt-get update -y
 sudo apt-get install -y git git-lfs          # needed before clone
-sudo apt-get install -y build-essential perl # needed by install_build.sh's
-                                              # static OpenSSL build; not yet
-                                              # installed by install_deps.sh
+sudo apt-get install -y build-essential      # not required but handy to have for troubleshooting
 
 git clone https://github.com/SJh29/firecracker-lambda-emulator.git
 cd firecracker-lambda-emulator
@@ -97,7 +95,9 @@ Installed by `install_deps.sh`: `git`, `git-lfs`, `curl`, `wget`, `jq`, `iproute
 
 Assumed already present on the host (not installed by any script here): `sha256sum`/`shasum`, `tar`, `sudo`.
 
-**Not currently installed by any script, but required by `install_build.sh`'s static OpenSSL build:** `build-essential`, `perl`. Install these manually before running `install_build.sh` (see step 0 above) -- see [Install Scripts](./docs/install_docs.md) for detail.
+`openssl`/`sysbench`/`fio` are vendored prebuilt from `static_build/` (see [docs/static_binaries.md](./docs/static_binaries.md)). 
+
+`build-essential` is still worth installing manually (step 0 above) for troubleshooting, but nothing in the install pipeline requires it.
 
 ## Concurrency
 
@@ -108,4 +108,5 @@ Instance `k` owns `/tmp/firecracker/<k>.socket`, a writable `/tmp` scratch drive
 - [Install Scripts](./docs/install_docs.md) -- per-script breakdown of `install_deps.sh` → `install_verify.sh`
 - [Configuration Files](./docs/config_files.md)
 - [Function Setup Scripts](./docs/function_scripts.md)
+- [Static Binaries](./docs/static_binaries.md) -- how/why `static_build/{openssl,sysbench,fio}` were built
 - [Power Measurement Scripts](./docs/power_scripts.md)

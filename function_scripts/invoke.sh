@@ -16,7 +16,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/../common.sh"
 
 INSTANCE=0
 ALL=0
-PAYLOAD='{"size": "1000000"}'
+PAYLOAD='{"method": "graph-mst", "size": "1000000"}'
 TIMEOUT=300
 
 while getopts "i:ap:t:h" opt; do

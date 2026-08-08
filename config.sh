@@ -24,11 +24,18 @@ TMP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/tmp"
 BUSYBOX_URL="https://busybox.net/downloads/binaries/1.35.0-x86_64-linux-musl/busybox"
 BUSYBOX_PATH="${TMP_DIR}/busybox"
 
-# ─── static OpenSSL binary ─────────────────────
-OPENSSL_URL="https://github.com/openssl/openssl/releases/download/openssl-3.5.7/openssl-3.5.7.tar.gz"
-OPENSSL_TARBALL="/tmp/openssl-3.5.7.tar.gz"   # source tarball download target
-OPENSSL_SRC_DIR="/tmp/openssl"                # source extracted + built here
-OPENSSL_BIN="/tmp/openssl/apps/openssl"       # resulting static binary
+# ─── Vendored static binaries ────────────────────────────────────────────────
+# Prebuilt, fully statically-linked x86_64 Linux binaries checked into
+# static_build/ (see docs/static_binaries.md for how/why they were built).
+# The AWS Lambda base rootfs ships none of these; install_build.sh copies them
+# straight into the guest at boot-strap-injection time instead of building
+# from source on every install (openssl/sysbench/fio all take several minutes
+# to compile, and none publish an official static binary release).
+STATIC_BUILD_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/static_build"
+OPENSSL_BIN="${STATIC_BUILD_DIR}/openssl"   # function/benchmark/chacha20.py
+SYSBENCH_BIN="${STATIC_BUILD_DIR}/sysbench" # prime_number.py, thread.py
+FIO_BIN="${STATIC_BUILD_DIR}/fio"           # readdisk.py
+
 # ─── Output filenames ────────────────────────────────────────────────────────
 # The final rootfs image produced by part 2 and verified by part 3.
 ROOTFS_IMAGE="aws_baseimage.ext4"

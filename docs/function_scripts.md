@@ -147,10 +147,10 @@ Sends a JSON payload to the Lambda Runtime Interface Emulator (RIE) inside a gue
 |---|---|---|
 | `-i INSTANCE` | Instance id to invoke | `0` |
 | `-a` | Invoke **every** running instance concurrently and wait for all of them | off |
-| `-p PAYLOAD` | JSON body sent to the invocation endpoint | `{"size": "1000000"}` |
+| `-p PAYLOAD` | JSON body sent to the invocation endpoint | `{"method": "graph-mst", "size": "1000000"}` |
 | `-t TIMEOUT` | Maximum wait time in seconds | `300` |
 
-**What the default payload runs.** [`function/function.py`](../function/function.py)'s handler dispatches on the payload's `method` field: `{"method": "chacha20", ...}` runs an OpenSSL chacha20 cipher benchmark over an 8 MB deterministic payload; anything else (including the default `{"size": "1000000"}`, which has no `method`) runs SeBS 502.graph-mst -- builds a Barabási–Albert graph of `size` vertices and computes its spanning tree. `size: 1000000` is a large graph; expect the default smoke-test invocation to take noticeably longer than the chacha20 path. To run the chacha20 benchmark instead:
+**What the default payload runs.** [`function/handler.py`](../function/handler.py) dispatches on the payload's `method` field against the benchmarks in [`function/benchmark/`](../function/benchmark/); a missing or unrecognized `method` returns an error instead of running anything. The default payload's `method: "graph-mst"` runs SeBS 502.graph-mst -- builds a Barabási–Albert graph of `size` vertices and computes its spanning tree. `size: 1000000` is a large graph; expect the default smoke-test invocation to take noticeably longer than the chacha20 path. To run the chacha20 benchmark instead:
 ```bash
 ./function_scripts/invoke.sh -p '{"method": "chacha20", "rounds": 100000, "password": "benchmarkpass", "seed": 42}'
 ```

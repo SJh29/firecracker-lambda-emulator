@@ -23,34 +23,19 @@ set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/config.sh"
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/build.env"
 
-# ─── Static OpenSSL binary ───────────────────────────────────────────────────
-# The chacha20 benchmark shells out to openssl in the guest, which has none. 
-# Necessary for benchmarking functions
-if [[ -f "$OPENSSL_BIN" ]]; then
-  echo "Static OpenSSL binary already built at $OPENSSL_BIN, skipping..."
-else
-  echo "Building static OpenSSL binary..."
-  if [[ ! -f "$OPENSSL_TARBALL" ]]; then
-    curl -L -o "$OPENSSL_TARBALL" "$OPENSSL_URL"
-  else
-    echo "Source tarball already exists: $OPENSSL_TARBALL, skipping download..."
+# ─── Vendored static binaries ────────────────────────────────────────────────
+# openssl (chacha20 benchmark), sysbench (prime_number/thread benchmarks), and
+# fio (readdisk benchmark) all shell out to guest binaries the AWS base image
+# doesn't ship, and none of the three publish an official static release --
+# see docs/static_binaries.md. Built once via WSL and checked into
+# static_build/, rather than compiled from source on every install.
+for bin in "$OPENSSL_BIN" "$SYSBENCH_BIN" "$FIO_BIN"; do
+  if [[ ! -f "$bin" ]]; then
+    echo "ERROR: missing vendored static binary: $bin" >&2
+    echo "See docs/static_binaries.md to rebuild it." >&2
+    exit 1
   fi
-  # --strip-components drops the top-level openssl-3.5.7/ so the build dir is
-  # exactly $OPENSSL_SRC_DIR.
-  if [[ ! -d "$OPENSSL_SRC_DIR" ]]; then
-    mkdir -p "$OPENSSL_SRC_DIR"
-    tar xzf "$OPENSSL_TARBALL" -C "$OPENSSL_SRC_DIR" --strip-components=1
-  else
-    echo "Source directory already exists: $OPENSSL_SRC_DIR, skipping extraction..."
-  fi
-  # Subshell so the cd doesn't leak into the rest of the script.
-  (
-    cd "$OPENSSL_SRC_DIR"
-    ./Configure no-shared no-dso -static linux-x86_64
-    make -j"$(nproc)"
-  )
-  echo "Static OpenSSL binary built at: $OPENSSL_BIN"
-fi
+done
 
 # ─── Build AWS Lambda base image rootfs ──────────────────────────────────────
 if [[ -f "$ROOTFS_IMAGE" ]]; then
@@ -95,12 +80,17 @@ else
   MOUNT_DIR="$(mktemp -d)"
   sudo mount -o loop "$IMG_PARTIAL" "$MOUNT_DIR"
 
-  # The AWS base image ships neither mount(8) (needed for the drives the wrapper
-  # mounts) nor openssl (needed by the chacha20 benchmark).
+  # The AWS base image ships none of: mount(8) (needed for the drives the
+  # wrapper mounts), openssl (chacha20 benchmark), sysbench (prime_number/
+  # thread benchmarks), or fio (readdisk benchmark).
   sudo cp "$BUSYBOX_PATH" "$MOUNT_DIR/usr/bin/busybox"
   sudo chmod +x "$MOUNT_DIR/usr/bin/busybox"
   sudo cp "$OPENSSL_BIN" "$MOUNT_DIR/usr/bin/openssl"
   sudo chmod +x "$MOUNT_DIR/usr/bin/openssl"
+  sudo cp "$SYSBENCH_BIN" "$MOUNT_DIR/usr/bin/sysbench"
+  sudo chmod +x "$MOUNT_DIR/usr/bin/sysbench"
+  sudo cp "$FIO_BIN" "$MOUNT_DIR/usr/bin/fio"
+  sudo chmod +x "$MOUNT_DIR/usr/bin/fio"
   sudo mkdir -p "$MOUNT_DIR/var/task"
 
   # Baked in at build time rather than written at boot: the nameserver is

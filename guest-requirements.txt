@@ -6,3 +6,15 @@
 # One per line; pin versions here if you need reproducible builds.
 
 igraph
+
+# function/benchmark/chameleon.py (chameleon_python)
+chameleon
+six
+
+# function/benchmark/compression.py (sebs_311), function/benchmark/csv.py (csv_python)
+numpy
+pandas
+
+# function/benchmark/video_processing.py (sebs_220_gif)
+requests
+Pillow
