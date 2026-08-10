@@ -17,5 +17,5 @@ from .sqlite import sqlite_python
 from .thread import thread_sysbench
 from .video_processing import sebs_220_gif
 from .Inspector import Inspector
-
-__all__ = ['chacha20_python', 'chameleon_python', 'sebs_311', 'csv_python', 'fopen_python', 'float_operation', 'sebs_501', 'sebs502', 'sebs503', 'json_dumps_loads_python', 'cpu_prime_sysbench', 'disk_io_loader_fio', 'memory_loader_sysbench', 'malloc_python', 'socket_python', 'sqlite_python', 'thread_sysbench', 'sebs_220_gif', 'Inspector']
+from .internet_test import internet_check
+__all__ = ['chacha20_python', 'chameleon_python', 'sebs_311', 'csv_python', 'fopen_python', 'float_operation', 'sebs_501', 'sebs502', 'sebs503', 'json_dumps_loads_python', 'cpu_prime_sysbench', 'disk_io_loader_fio', 'memory_loader_sysbench', 'malloc_python', 'socket_python', 'sqlite_python', 'thread_sysbench', 'sebs_220_gif', 'Inspector','internet_check']

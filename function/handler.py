@@ -22,6 +22,7 @@ BENCHMARKS = {
     'sqlite': sqlite_python,
     'thread': thread_sysbench,
     'video-processing': sebs_220_gif,
+    'internet_test': internet_check,
 }
 
 
