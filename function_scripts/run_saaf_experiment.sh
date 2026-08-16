@@ -71,7 +71,7 @@ FUNCS=()
 for k in "${TARGETS[@]}"; do FUNCS+=("$FUNCDIR/vm$k.json"); done
 
 CLIENT_CPUS="$(fc_free_cpus)"
-[[ -n "$CLIENT_CPUS" ]] || warn "instances are not pinned -- the driver will share cores with the guests."
+[[ -n "$CLIENT_CPUS" ]] || warn "no CPU pool is set -- the driver will share CPUs with the guests."
 
 log "instances : ${#TARGETS[@]} (${TARGETS[*]})"
 log "experiment: $EXPERIMENT"

@@ -6,14 +6,15 @@
 # Each microVM is launched by run_firecracker.sh inside its own leaf cgroup,
 # /sys/fs/cgroup/firecracker/vm<k>, with cpu.max derived from the template's
 # mem_size_mib (1 full vCPU per 1769 MB, matching AWS Lambda's CPU-per-memory
-# ratio) and a cpuset of whole physical cores, so concurrent instances get
-# independent quotas and don't share cores. The cgroups themselves are created
-# at run time by run_firecracker.sh; this script's job is to confirm the host
-# supports it:
+# ratio), so concurrent instances each get an independent quota. The parent
+# cgroup carries the cpuset naming the CPU pool they share. The cgroups
+# themselves are created at run time by run_firecracker.sh; this script's job is
+# to confirm the host supports it:
 #   - cgroup v2 unified hierarchy mounted at /sys/fs/cgroup
 #   - cpu and cpuset controllers available
 #   - both enabled in /sys/fs/cgroup/cgroup.subtree_control
-#     (required so child cgroups can set cpu.max / cpuset.cpus)
+#     (required so /sys/fs/cgroup/firecracker can hold a cpuset and its
+#      children can set cpu.max)
 
 set -euo pipefail
 
@@ -28,7 +29,7 @@ fi
 echo "cgroup v2 confirmed at /sys/fs/cgroup"
 
 # ─── 2. Verify cpu and cpuset controllers available on the host ──────────────
-# cpuset backs the per-instance CPU pinning; cpu backs the quota.
+# cpuset backs the shared CPU pool; cpu backs the per-instance quota.
 for CTRL in cpu cpuset; do
     if ! grep -qw "$CTRL" /sys/fs/cgroup/cgroup.controllers; then
         echo "ERROR: $CTRL controller not exposed in /sys/fs/cgroup/cgroup.controllers" >&2
@@ -39,9 +40,10 @@ for CTRL in cpu cpuset; do
 done
 
 # ─── 3. Ensure cpu and cpuset are enabled in subtree_control ─────────────────
-# A child cgroup can only set cpu.max / cpuset.cpus if the parent has the
-# controller enabled for its descendants via subtree_control. On systemd hosts
-# this is usually already on; if not, try to enable it at the root.
+# A cgroup only gets a controller's knobs if its parent has that controller
+# enabled for its descendants via subtree_control. Enabling both at the root is
+# what gives /sys/fs/cgroup/firecracker its cpuset.cpus and lets its children
+# set cpu.max. On systemd hosts this is usually already on; if not, enable it.
 for CTRL in cpu cpuset; do
     if grep -qw "$CTRL" /sys/fs/cgroup/cgroup.subtree_control; then
         echo "$CTRL controller already enabled in cgroup.subtree_control"

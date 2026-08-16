@@ -92,10 +92,12 @@ Verifies cgroup v2 prerequisites for per-instance CPU quota enforcement and enab
 | Check / action | Detail |
 |---|---|
 | `/sys/fs/cgroup` is `cgroup2fs` | Aborts if the host is on cgroup v1 |
-| `cpu` and `cpuset` listed in `/sys/fs/cgroup/cgroup.controllers` | Host kernel exposes both controllers -- `cpu` backs the quota, `cpuset` backs per-instance CPU pinning |
-| `cpu` and `cpuset` listed in `/sys/fs/cgroup/cgroup.subtree_control` | Enables each via `echo +cpu` / `echo +cpuset` if not already set, so child cgroups can write `cpu.max` / `cpuset.cpus` |
+| `cpu` and `cpuset` listed in `/sys/fs/cgroup/cgroup.controllers` | Host kernel exposes both controllers -- `cpu` backs the per-instance quota, `cpuset` backs the shared CPU pool |
+| `cpu` and `cpuset` listed in `/sys/fs/cgroup/cgroup.subtree_control` | Enables each via `echo +cpu` / `echo +cpuset` if not already set, so `/sys/fs/cgroup/firecracker` can hold a `cpuset` and its children can write `cpu.max` |
 
-The cgroups themselves are created on demand by `run_firecracker.sh`: each microVM gets its own leaf cgroup, `/sys/fs/cgroup/firecracker/vm<k>`, so concurrent instances get **independent** quotas and CPU pinning rather than sharing one. (cgroup v2 forbids processes in a cgroup that has children, so the launcher stays out of the parent and each VM enrols itself in its own leaf.) `cpu.max` is derived from `vm_config.template.json`'s `mem_size_mib` at the AWS Lambda ratio of **1 full vCPU per 1769 MB of guest memory**. When guest memory exceeds 1769 MB, `run_firecracker.sh` also raises `vcpu_count` to `ceil(mem_size_mib / 1769)` so the guest can use the additional host CPU time it has been granted.
+The cgroups themselves are created on demand by `run_firecracker.sh`: each microVM gets its own leaf cgroup, `/sys/fs/cgroup/firecracker/vm<k>`, so concurrent instances get **independent** quotas rather than sharing one. (cgroup v2 forbids processes in a cgroup that has children, so the launcher stays out of the parent and each VM enrols itself in its own leaf.) `cpu.max` is derived from `vm_config.template.json`'s `mem_size_mib` at the AWS Lambda ratio of **1 full vCPU per 1769 MB of guest memory**. When guest memory exceeds 1769 MB, `run_firecracker.sh` also raises `vcpu_count` to `ceil(mem_size_mib / 1769)` so the guest can use the additional host CPU time it has been granted.
+
+The parent cgroup carries the `cpuset` naming the CPU pool the instances **share** -- set with `CPU_POOL` or `OVERSUB`, and inherited by every leaf. See [function_scripts.md](function_scripts.md#cpu-quota-and-the-shared-pool).
 
 > The quota is written as `max` by default (i.e. unlimited) -- set `CPU_MAX=$CPU_QUOTA_US` in `run_firecracker.sh`, or export `CPU_MAX`, to enforce it.
 

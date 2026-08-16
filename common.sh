@@ -9,12 +9,19 @@
 #   config    <repo>/instances/vm_config-<k>.json
 #   scratch   <repo>/instances/scratch-<k>.ext4  (private writable /tmp drive)
 #   tap dev   tap<k>
-#   subnet    172.16.0.<4k>/30  →  host 172.16.0.<4k+1>, guest 172.16.0.<4k+2>
-#   guest MAC 06:00:AC:10:00:<4k+2>   (last 4 octets encode the guest IP)
+#   subnet    172.16.<hi>.<lo>/30  →  host 172.16.<hi>.<lo+1>, guest 172.16.<hi>.<lo+2>
+#   guest MAC 06:00:AC:10:<hi>:<lo+2>   (last 4 octets encode the guest IP)
+#
+#   where    hi = k / 64            (third octet)
+#            lo = 4 * (k % 64)      (base of that instance's /30)
+#
+# Each instance holds its own point-to-point /30, so the host routing table
+# stays unambiguous and no two guests share a broadcast domain. A /24 holds 64
+# such subnets and the third octet supplies 256 of those, so k tops out at
+# 16383 → 16384 instances, the whole of 172.16.0.0/16.
 #
 # The rootfs (aws_baseimage.ext4) and the function drive (function.ext4) are
-# NOT per-instance.  Only writable state is a per-instance scratch drive mounted at /tmp inside the guest. 
-# The last usable /30 is 172.16.0.252, so k tops out at 63 → 64 instances.
+# NOT per-instance.  Only writable state is a per-instance scratch drive mounted at /tmp inside the guest.
 
 API_SOCKET_FOLDER="${API_SOCKET_FOLDER:-/tmp/firecracker}"
 LOGFILE="./firecracker.log"
@@ -22,10 +29,18 @@ LOGFILE="./firecracker.log"
 # Parent cgroup for the per-instance leaves (firecracker/vm<k>).
 FC_CGROUP="${FC_CGROUP:-/sys/fs/cgroup/firecracker}"
 
-NET_PREFIX="172.16.0"
-# 172.16.0.(4k+2) 
+# First two octets of the guest network; the last two are derived from k.
+NET_PREFIX="172.16"
 MASK_SHORT="/30"
-MAX_INSTANCES=64
+MAX_INSTANCES=16384
+
+# ─── Host capacity ───────────────────────────────────────────────────────────
+# Memory held back for the host itself -- page cache, the collectors, the load
+# generator -- and Firecracker's own per-VM footprint on top of guest RAM.
+# Together these set how many instances run_firecracker.sh will launch before it
+# refuses; see fc_mem_capacity.
+FC_HOST_RESERVE_MIB="${FC_HOST_RESERVE_MIB:-2048}"
+FC_VMM_OVERHEAD_MIB="${FC_VMM_OVERHEAD_MIB:-8}"
 
 LAMBDA_PORT=8080
 RUNTIME_SCRIPT="lambda_runtime.py"
@@ -46,11 +61,11 @@ fc_config()   { echo "$FC_RUN_DIR/vm_config-${1:-0}.json"; }
 fc_scratch()  { echo "$FC_RUN_DIR/scratch-${1:-0}.ext4"; }
 fc_rootfs()   { echo "$FC_RUN_DIR/rootfs-${1:-0}.ext4"; }  # reflink benchmark only
 fc_tap()      { echo "tap${1:-0}"; }
-fc_host_ip()  { echo "$NET_PREFIX.$(( 4 * ${1:-0} + 1 ))"; }
-fc_guest_ip() { echo "$NET_PREFIX.$(( 4 * ${1:-0} + 2 ))"; }
-fc_mac()      { printf '06:00:AC:10:00:%02X\n' "$(( 4 * ${1:-0} + 2 ))"; }
+fc_host_ip()  { echo "$NET_PREFIX.$(( ${1:-0} / 64 )).$(( 4 * (${1:-0} % 64) + 1 ))"; }
+fc_guest_ip() { echo "$NET_PREFIX.$(( ${1:-0} / 64 )).$(( 4 * (${1:-0} % 64) + 2 ))"; }
+fc_mac()      { printf '06:00:AC:10:%02X:%02X\n' "$(( ${1:-0} / 64 ))" "$(( 4 * (${1:-0} % 64) + 2 ))"; }
 
-# Reject instance ids that would run past the end of 172.16.0.0/24.
+# Reject instance ids that would run past the end of 172.16.0.0/16.
 fc_check_instance() {
     local k="$1"
     if ! [[ "$k" =~ ^[0-9]+$ ]] || (( k >= MAX_INSTANCES )); then
@@ -73,17 +88,70 @@ fc_instances() {
     (( had_nullglob )) || shopt -u nullglob
 }
 
+# ─── Host memory capacity ────────────────────────────────────────────────────
+
+# Total host RAM in MiB.
+fc_host_mem_mib() { awk '/^MemTotal:/ { print int($2 / 1024) }' /proc/meminfo; }
+
+# How many instances of $1 MiB of guest memory the host can carry, given the
+# reserve it keeps for itself and Firecracker's per-VM overhead.
+#
+# MemTotal rather than MemAvailable: the answer has to be the same every run,
+# not a function of how full the page cache happens to be. Prints 0 when a
+# single instance does not fit, which callers report separately.
+fc_mem_capacity() {
+    local mem_mib="$1" total per_vm usable
+    total="$(fc_host_mem_mib)"
+    [[ -n "$total" ]] || { echo 0; return 0; }
+    per_vm=$(( mem_mib + FC_VMM_OVERHEAD_MIB ))
+    (( per_vm > 0 )) || { echo 0; return 0; }
+    usable=$(( total - FC_HOST_RESERVE_MIB ))
+    (( usable > 0 )) || { echo 0; return 0; }
+    echo $(( usable / per_vm ))
+}
+
 # ─── Host CPU topology ───────────────────────────────────────────────────────
 
-# One CPU per physical core (hyperthread siblings excluded), as "<cpu> <node>"
-# per line, ordered by NUMA node, then socket, then core.
-fc_core_pool() {
+# Every logical CPU as "<cpu> <node>" per line, ordered by NUMA node, then
+# socket, then core, then thread. Taking the first M of these therefore fills
+# whole cores and whole nodes before spilling onto the next, so a pool sized by
+# count lands on as few nodes as possible.
+fc_cpu_list() {
     lscpu -p=CPU,CORE,SOCKET,NODE 2>/dev/null \
       | grep -v '^#' \
       | awk -F, '{ print $1, ($4 == "" ? 0 : $4), $3, $2 }' \
       | sort -k2,2n -k3,3n -k4,4n -k1,1n \
-      | awk '!seen[$3","$4]++ { print $1, $2 }'
+      | awk '{ print $1, $2 }'
 }
+
+# The first $1 logical CPUs from fc_cpu_list, printed as "<cpus> <nodes>" where
+# both are cpuset lists. Fails if the host has fewer CPUs than requested.
+fc_cpu_pool() {
+    local want="$1" n=0 cpu node
+    local -a cpus=() nodes=()
+    [[ "$want" =~ ^[0-9]+$ ]] && (( want >= 1 )) || return 1
+    while read -r cpu node; do
+        (( n < want )) || break
+        cpus+=("$cpu"); nodes+=("$node"); n=$(( n + 1 ))
+    done < <(fc_cpu_list)
+    (( n == want )) || return 1
+    printf '%s %s\n' \
+        "$(IFS=,; echo "${cpus[*]}")" \
+        "$(printf '%s\n' "${nodes[@]}" | sort -n -u | paste -sd,)"
+}
+
+# NUMA nodes spanned by a cpuset list, itself as a cpuset list.
+fc_cpu_nodes() {
+    local -a sel; local cpu node
+    mapfile -t sel < <(fc_cpu_expand "$1")
+    fc_cpu_list | while read -r cpu node; do
+        [[ " ${sel[*]} " == *" $cpu "* ]] && echo "$node"
+    done | sort -n -u | paste -sd,
+}
+
+# Number of CPUs in a cpuset list. Zero for an empty list, so it stays safe to
+# call under `set -e`.
+fc_cpu_count() { fc_cpu_expand "$1" | wc -l; }
 
 # Expand a cpuset list ("0-3,8") to one CPU id per line.
 fc_cpu_expand() {
@@ -105,22 +173,23 @@ fc_thread_siblings() {
     if [[ -r "$f" ]]; then cat "$f"; else echo "$1"; fi
 }
 
-# Every CPU pinned to an instance plus their hyperthread siblings, ascending.
-# Reads cpuset.cpus, not cpuset.cpus.effective, so an unpinned run reports
-# nothing rather than the whole host.
+# Every CPU in the microVM pool plus their hyperthread siblings, ascending. The
+# siblings are included because a task on one shares execution units with the
+# pool CPU it partners, so it is not free of the guests either.
+#
+# Reads cpuset.cpus, not cpuset.cpus.effective, so a run with no pool set
+# reports nothing rather than the whole host.
 fc_reserved_cpus() {
-    local leaf cpus c
-    for leaf in "$FC_CGROUP"/vm*/cpuset.cpus; do
-        [[ -r "$leaf" ]] || continue
-        cpus="$(<"$leaf")"
-        [[ -n "$cpus" ]] || continue
-        for c in $(fc_cpu_expand "$cpus"); do
-            fc_cpu_expand "$(fc_thread_siblings "$c")"
-        done
+    local cpus c
+    [[ -r "$FC_CGROUP/cpuset.cpus" ]] || return 0
+    cpus="$(<"$FC_CGROUP/cpuset.cpus")"
+    [[ -n "$cpus" ]] || return 0
+    for c in $(fc_cpu_expand "$cpus"); do
+        fc_cpu_expand "$(fc_thread_siblings "$c")"
     done | sort -n -u
 }
 
-# CPUs not in fc_reserved_cpus, as a cpuset list. Empty if nothing is pinned.
+# CPUs not in fc_reserved_cpus, as a cpuset list. Empty if no pool is set.
 fc_free_cpus() {
     local -a reserved; local c out=""
     mapfile -t reserved < <(fc_reserved_cpus)

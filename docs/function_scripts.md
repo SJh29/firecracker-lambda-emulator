@@ -34,7 +34,7 @@ Each VM also gets its **own point-to-point /30**, so the host routing table stay
 
 Instance 0 resolves to exactly the old single-VM values, so the previous setup is just the `k=0` case of this one. The last usable /30 is `172.16.0.252`, capping the design at **64 instances** (`k` = 0..63).
 
-The addressing helpers (`fc_socket`, `fc_scratch`, `fc_tap`, `fc_host_ip`, `fc_guest_ip`, `fc_mac`, `fc_instances`) all live in [common.sh](../common.sh) -- no script hardcodes these paths. The CPU topology helpers (`fc_core_pool`, `fc_reserved_cpus`, `fc_free_cpus`) live there too.
+The addressing helpers (`fc_socket`, `fc_scratch`, `fc_tap`, `fc_host_ip`, `fc_guest_ip`, `fc_mac`, `fc_instances`) all live in [common.sh](../common.sh) -- no script hardcodes these paths. The CPU topology helpers (`fc_cpu_list`, `fc_cpu_pool`, `fc_cpu_nodes`, `fc_cpu_count`, `fc_reserved_cpus`, `fc_free_cpus`) live there too.
 
 > A separate benchmark, [temp_reflink_setup.sh](../temp_reflink_setup.sh), instead gives each VM a `cp --reflink=auto` **writable** clone of the whole rootfs (`instances/rootfs-<k>.ext4`) and times create→first-invocation. It's the alternative this shared-rootfs + scratch layout was chosen over; keep it only for the comparison.
 
@@ -64,7 +64,8 @@ sudo ./run_firecracker.sh -n 4 -S 256        # 4 VMs, 256 MiB /tmp each
 
 | Env | Description | Default |
 |---|---|---|
-| `PIN_CPUS` | `1`/`0` forces per-instance CPU pinning on/off | on at ≥ 1769 MiB, off below |
+| `CPU_POOL` | The set of host CPUs the whole fleet shares, as either a cpuset list (`0-23,48-71`) or a count of CPUs | the whole host |
+| `OVERSUB` | Requested vCPUs per pool CPU; sizes the pool to `ceil(N × vcpu_count / OVERSUB)`. Ignored when `CPU_POOL` is set | -- |
 | `CPU_MAX` | Raw `cpu.max` quota; overrides both the default and `-u` | -- |
 
 **What it does, per instance:**
@@ -73,17 +74,37 @@ sudo ./run_firecracker.sh -n 4 -S 256        # 4 VMs, 256 MiB /tmp each
 3. Creates the leaf cgroup `/sys/fs/cgroup/firecracker/vm<k>` and enrolls that VM in it, so the CPU quota is per-instance rather than shared.
 4. Launches Firecracker on `/tmp/firecracker/<k>.socket`, with its console redirected to `logs/<timestamp>/console-<k>.log`.
 
-### CPU quota and pinning
+### CPU quota and the shared pool
 
-`cpu.max` is set to `mem_size_mib / 1769` vCPUs per instance -- AWS Lambda's CPU-per-memory ratio -- so a guest gets the same share of a core that the equivalent Lambda would. `-u` removes the cap; use it only when the run is not being compared against Lambda.
+`cpu.max` is set to `mem_size_mib / 1769` vCPUs per instance -- AWS Lambda's CPU-per-memory ratio -- so a guest gets the same share of a core that the equivalent Lambda would. This is the mechanism that matches Lambda, which meters CPU time by memory size and leaves placement to the host scheduler. `-u` removes the cap; use it only when the run is not being compared against Lambda.
 
-The quota governs *how much* CPU a VM gets, not *which* CPUs it runs on, so each instance also gets a `cpuset` of `vcpu_count` whole physical cores. Hyperthread siblings are left idle and a VM's cores never straddle a NUMA node, which keeps concurrent instances from contending for execution units and keeps core assignment stable between runs. Pinning is skipped with a warning if the host has fewer physical cores than `N × vcpu_count`.
+The quota governs *how much* CPU a VM gets, not *which* CPUs it runs on. `CPU_POOL` designates the set of host CPUs available to the **fleet as a whole** -- every instance shares it, none owns a slice of it. The cpuset is written once to the parent cgroup `/sys/fs/cgroup/firecracker` and inherited by each `vm<k>` leaf, so instances contend for the pool the way co-tenant functions contend for a host. With no pool set, the fleet may run anywhere on the host.
 
-Pinning is **off by default below 1769 MiB**. At that point the quota is already less than one full vCPU, so a dedicated core per instance would sit mostly idle and would cap the instance count at the host's physical core count for no benefit -- the quota alone is enough. Above it, set `PIN_CPUS=0` to turn pinning off, or `PIN_CPUS=1` to force it on at low memory.
+Give the pool either as a literal cpuset list or as a count of CPUs:
 
-Both need the `cpu` and `cpuset` controllers delegated -- run [install_cgroup.sh](../install_cgroup.sh) once to check.
+```bash
+sudo CPU_POOL=0-23 ./run_firecracker.sh -n 8      # the fleet shares CPUs 0-23
+sudo CPU_POOL=16   ./run_firecracker.sh -n 8      # the fleet shares 16 CPUs
+```
 
-It also invokes `setup_tap.sh -n N` first, marks the scratch directory `nodatacow` on btrfs, and warns if `2 × N` exceeds the host CPU count (contended VMs make the power numbers meaningless).
+A bare integer is read as a count, so a single-CPU pool has to be written as a range (`3-3`). A pool given by count is taken in NUMA order, filling whole cores and whole nodes before spilling onto the next, and `cpuset.mems` is bound to the nodes it lands on so cross-node memory access does not add variance belonging to the host rather than to the workload.
+
+`OVERSUB` sizes the pool relative to what the fleet requests, as `ceil(N × vcpu_count / OVERSUB)`. This is what turns co-tenancy into a controlled variable: `OVERSUB=1` gives the fleet exactly as many CPUs as it asks for, `OVERSUB=2` gives it half, and `OVERSUB=0.5` gives it twice as many.
+
+```bash
+sudo OVERSUB=2 ./run_firecracker.sh -n 8          # 8 VMs contend 2:1 for the pool
+```
+
+At launch the script reports the pool, the fleet's aggregate quota, and the resulting ratio, and warns when the fleet requests more CPU than the pool holds:
+
+```
+CPU pool: 0-15  (16 cpus, node(s) 0)
+Requested CPU: 16.00 vcpu over 16 cpus (1.00x)
+```
+
+Both the quota and the pool need the `cpu` and `cpuset` controllers delegated -- run [install_cgroup.sh](../install_cgroup.sh) once to check. A missing `cpuset` controller downgrades to a warning and the VMs still start, unpooled.
+
+It also invokes `setup_tap.sh -n N` first and marks the scratch directory `nodatacow` on btrfs.
 
 ### Console logs
 
@@ -99,7 +120,7 @@ Each file holds that VM's guest kernel messages, the bootstrap wrapper's output 
 
 > If a payload can write more than `-S` MiB to `/tmp` in one invocation, the guest hits `ENOSPC` mid-run -- raise `-S`. The chacha20 default writes ~16 MiB, well under 128.
 
-> **CPU quota is off by default.** `cpu.max` is written as `max <period>`. Set `CPU_MAX=$CPU_QUOTA_US` (or export `CPU_MAX`) to enable the memory-proportional quota of 1 vCPU per 1769 MB.
+> **The CPU quota is enforced by default**, at the memory-proportional rate of 1 vCPU per 1769 MB. `-u` writes `cpu.max` as `max <period>` to lift it, and `CPU_MAX` overrides both.
 
 ---
 
@@ -201,7 +222,7 @@ Drives every running microVM concurrently with [saaf_driver.py](../function_scri
 |---|---|---|
 | `SAAF_DIR` | Path to the SAAF checkout | `SAAF` |
 
-The script itself only discovers instances, generates their function JSONs, and `taskset`s the driver onto CPUs no microVM is using -- the complement of every instance's `cpuset` plus their hyperthread siblings -- so the load generator never competes with a guest for a core. It warns if the instances aren't pinned, and if any has `cpu.max=max` (an unmetered guest isn't held to the Lambda CPU allocation, so its durations aren't comparable).
+The script itself only discovers instances, generates their function JSONs, and `taskset`s the driver onto CPUs no microVM is using -- the complement of the CPU pool plus its hyperthread siblings -- so the load generator never competes with a guest for a core. The siblings are excluded because a task on one shares execution units with the pool CPU it partners. Keeping the driver off the pool is measurement hygiene rather than an attempt to emulate Lambda: the load generator is not part of the platform under study, and if it lands on a guest's CPU it perturbs the very durations being recorded. It warns when no pool is set, and if any instance has `cpu.max=max` (an unmetered guest isn't held to the Lambda CPU allocation, so its durations aren't comparable).
 
 ---
 

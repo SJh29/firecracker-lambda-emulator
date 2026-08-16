@@ -11,8 +11,13 @@
 #                     quota of mem/1769 vCPUs per instance.
 # 
 # Env:
-#   PIN_CPUS          1/0 to force per-instance CPU pinning on/off. Defaults to
-#                     on at >= 1769 MiB, off below it (quota only).
+#   CPU_POOL          The set of host CPUs the whole fleet shares, as either a
+#                     cpuset list ("0-23,48-71") or a count of CPUs. Unset: the
+#                     fleet may run anywhere on the host.
+#   OVERSUB           Requested vCPUs per pool CPU; sizes the pool to
+#                     ceil(N * vcpu_count / OVERSUB). 1 gives the fleet exactly
+#                     as many CPUs as it requests, 2 gives it half. Ignored when
+#                     CPU_POOL is set.
 #   CPU_MAX           Raw cpu.max quota; overrides both the default and -u.
 #
 # ── Design ──────────────────────────────────────────────────────────────────
@@ -20,8 +25,9 @@
 # instance, so N VMs can run at once without interfering:
 #
 #   shared, read-only   rootfs (aws_baseimage.ext4), function drive
+#   shared              the CPU pool, when one is set
 #   per-instance        API socket, scratch drive, TAP device, MAC, guest IP,
-#                       cgroup, CPU set, generated config, console log
+#                       cgroup, CPU quota, generated config, console log
 #
 # A guest's only writable surface is its scratch drive, mounted at /tmp and
 # mkfs'd fresh each launch, so a run can neither corrupt the shared images nor
@@ -60,13 +66,6 @@ fc_check_instance "$(( NUM_INSTANCES - 1 ))" || exit 1
 BASE_ROOTFS="$HERE/$ROOTFS_IMAGE"
 [[ -f "$BASE_ROOTFS" ]] || { error "base rootfs not found: $BASE_ROOTFS (run install_build.sh)"; exit 1; }
 [[ -f "$HERE/function.ext4" ]] || { error "function drive not found: $HERE/function.ext4 (run function_scripts/build_function.sh)"; exit 1; }
-
-# Each VM pins ~1 vCPU plus a VMM thread, so oversubscribing the host makes the
-# power numbers meaningless. Warn rather than refuse -- it's still runnable.
-NPROC=$(nproc)
-if (( NUM_INSTANCES * 2 > NPROC )); then
-    warn "$NUM_INSTANCES instances need $(( NUM_INSTANCES * 2 )) CPUs but the host has $NPROC -- measurements will be contended."
-fi
 
 # ── Run directories ─────────────────────────────────────────────────────────
 # Firecracker refuses to start if its socket already exists, so the previous
@@ -133,73 +132,86 @@ fi
     && echo "Firecracker cgroup: $CGROUP/vm<k>  cpu.max=$CPU_MAX $CPU_PERIOD_US  (MEM=${MEM_MIB} MiB, vcpu=${VCPU_COUNT})" \
     || echo "Firecracker cgroup: disabled  (MEM=${MEM_MIB} MiB, vcpu=${VCPU_COUNT})"
 
-# ── Per-instance CPU pinning (cgroup v2 cpuset) ─────────────────────────────
-# cpu.max caps how much CPU time a VM gets, not which CPUs it runs on. Each
-# instance is given VCPU_COUNT whole physical cores from fc_core_pool -- one core
-# per vCPU, hyperthread siblings left idle -- allocated so a VM's cores never
-# straddle a NUMA node. Pinning is skipped entirely if the host is too small.
+# ── Shared CPU pool (cgroup v2 cpuset) ──────────────────────────────────────
+# cpu.max caps how much CPU time each VM gets; the pool caps which host CPUs the
+# fleet as a whole may run on. It is set once on the parent cgroup and inherited
+# by every instance, so instances contend for the pool the way co-tenant
+# functions contend for a host rather than each owning private cores. This
+# mirrors AWS Lambda, which meters CPU time by memory size and leaves placement
+# to the host scheduler.
 #
-# Below 1769 MB the quota is a fraction of one vCPU, so a dedicated core per
-# instance would idle most of that core and cap the instance count for nothing;
-# the quota alone is left to do the work. Setting PIN_CPUS explicitly overrides
-# this in either direction.
-PIN_OFF_REASON=""
-if (( MEM_MIB < 1769 )); then
-    PIN_CPUS="${PIN_CPUS:-0}"
-    (( PIN_CPUS )) || PIN_OFF_REASON="quota only below 1769 MiB; PIN_CPUS=1 to force"
-else
-    PIN_CPUS="${PIN_CPUS:-1}"
-fi
-VM_CPUS=(); VM_NODE=()
+# With no pool set the fleet may run anywhere on the host, and the quota alone
+# does the work. Sizing the pool below what the fleet requests oversubscribes it
+# by a known ratio, which is what turns co-tenancy into a controlled variable.
+POOL_CPUS=""; POOL_MEMS=""
 
-if (( CGROUP_OK )) && (( PIN_CPUS )); then
-    if ! grep -qw cpuset "$CGROUP/cgroup.subtree_control" 2>/dev/null; then
-        echo "+cpuset" | sudo tee "$CGROUP/cgroup.subtree_control" >/dev/null 2>&1 || {
-            warn "could not enable the cpuset controller on $CGROUP -- running unpinned."
-            PIN_CPUS=0
-        }
-    fi
+# OVERSUB is a ratio, so the arithmetic is awk's rather than the shell's.
+if [[ -z "${CPU_POOL:-}" && -n "${OVERSUB:-}" ]]; then
+    CPU_POOL="$(awk -v n="$(( NUM_INSTANCES * VCPU_COUNT ))" -v r="$OVERSUB" \
+        'BEGIN { if (r !~ /^[0-9.]+$/ || r + 0 <= 0) exit 1
+                 c = int(n / r); if (c < n / r) c++
+                 print (c < 1 ? 1 : c) }')" \
+        || { error "OVERSUB must be a positive number (got '$OVERSUB')"; exit 1; }
 fi
 
-if (( CGROUP_OK )) && (( PIN_CPUS )); then
-    POOL_CPU=(); POOL_NODE=()
-    while read -r cpu node; do
-        POOL_CPU+=("$cpu"); POOL_NODE+=("$node")
-    done < <(fc_core_pool)
-
-    NEED=$(( NUM_INSTANCES * VCPU_COUNT ))
-    if (( ${#POOL_CPU[@]} < NEED )); then
-        warn "pinning needs $NEED physical cores ($NUM_INSTANCES x $VCPU_COUNT vcpu) but the host has ${#POOL_CPU[@]} -- running unpinned."
-        warn "lower -n, or set PIN_CPUS=0 to silence this."
-        PIN_CPUS=0
-    fi
+# Cleared unconditionally first: the pool lives on the parent cgroup, which
+# outlives a run, so one left behind would silently constrain the next.
+if (( CGROUP_OK )) && [[ -e "$CGROUP/cpuset.cpus" ]]; then
+    echo "" | sudo tee "$CGROUP/cpuset.cpus" >/dev/null 2>&1 || true
 fi
 
-if (( CGROUP_OK )) && (( PIN_CPUS )); then
-    idx=0
-    for (( k=0; k<NUM_INSTANCES; k++ )); do
-        # POOL_* is node-ordered, so a window that starts and ends on the same
-        # node lies entirely within it.
-        while (( idx + VCPU_COUNT <= ${#POOL_CPU[@]} )) \
-              && [[ "${POOL_NODE[idx]}" != "${POOL_NODE[idx + VCPU_COUNT - 1]}" ]]; do
-            idx=$(( idx + 1 ))
-        done
-        if (( idx + VCPU_COUNT > ${#POOL_CPU[@]} )); then
-            warn "ran out of node-aligned cores at instance $k -- running unpinned."
-            VM_CPUS=(); VM_NODE=()
-            break
+if [[ -n "${CPU_POOL:-}" ]]; then
+    if ! (( CGROUP_OK )); then
+        warn "no cgroup available -- ignoring CPU_POOL, the fleet may run anywhere."
+    elif [[ ! -e "$CGROUP/cpuset.cpus" ]]; then
+        warn "the cpuset controller is not delegated to $CGROUP -- ignoring CPU_POOL."
+        warn "run ./install_cgroup.sh to fix; VMs will still start."
+    else
+        # A bare integer is a CPU count; anything else is a literal cpuset list.
+        # A single-CPU pool therefore has to be written as a range, "3-3".
+        if [[ "$CPU_POOL" =~ ^[0-9]+$ ]]; then
+            read -r POOL_CPUS POOL_MEMS < <(fc_cpu_pool "$CPU_POOL") || {
+                error "a pool of $CPU_POOL CPUs was requested but the host has $(nproc --all)"
+                exit 1
+            }
+        else
+            POOL_CPUS="$CPU_POOL"
+            POOL_MEMS="$(fc_cpu_nodes "$POOL_CPUS")"
+            [[ -n "$POOL_MEMS" ]] || { error "CPU_POOL matches no CPU on this host: '$CPU_POOL'"; exit 1; }
         fi
-        cpus="${POOL_CPU[idx]}"
-        for (( j=1; j<VCPU_COUNT; j++ )); do cpus+=",${POOL_CPU[idx + j]}"; done
-        VM_CPUS[k]="$cpus"
-        VM_NODE[k]="${POOL_NODE[idx]}"
-        idx=$(( idx + VCPU_COUNT ))
-    done
+
+        echo "$POOL_CPUS" | sudo tee "$CGROUP/cpuset.cpus" >/dev/null || {
+            error "could not set the CPU pool to '$POOL_CPUS'"; exit 1; }
+        # Bind memory to the nodes the pool sits on, so cross-node access does
+        # not add variance that belongs to the host rather than to the workload.
+        echo "$POOL_MEMS" | sudo tee "$CGROUP/cpuset.mems" >/dev/null \
+            || warn "could not set cpuset.mems -- memory is not node-bound."
+    fi
 fi
 
-(( ${#VM_CPUS[@]} )) \
-    && echo "CPU pinning: one physical core per vCPU, HT siblings idle" \
-    || echo "CPU pinning: disabled${PIN_OFF_REASON:+  ($PIN_OFF_REASON)}"
+# Aggregate demand against the CPUs actually available to it. The quota, not
+# vcpu_count, is what the fleet can really consume, so the ratio is computed
+# from it -- an unmetered run has no ceiling and is simply reported as such.
+POOL_SIZE=$(( $(fc_cpu_count "$POOL_CPUS") ))
+(( POOL_SIZE )) || POOL_SIZE=$(nproc --all)
+
+if [[ -n "$POOL_CPUS" ]]; then
+    echo "CPU pool: $POOL_CPUS  ($POOL_SIZE cpus, node(s) $POOL_MEMS)"
+else
+    echo "CPU pool: whole host ($POOL_SIZE cpus)"
+fi
+
+if [[ "$CPU_MAX" == max ]]; then
+    warn "instances are unmetered (cpu.max=max) -- they are not held to the Lambda CPU allocation."
+else
+    DEMAND="$(awk -v q="$CPU_MAX" -v p="$CPU_PERIOD_US" -v n="$NUM_INSTANCES" \
+        'BEGIN { printf "%.2f", n * q / p }')"
+    RATIO="$(awk -v d="$DEMAND" -v c="$POOL_SIZE" 'BEGIN { printf "%.2f", d / c }')"
+    echo "Requested CPU: $DEMAND vcpu over $POOL_SIZE cpus (${RATIO}x)"
+    if awk -v r="$RATIO" 'BEGIN { exit !(r > 1) }'; then
+        warn "the fleet requests more CPU than the pool holds -- instances will contend."
+    fi
+fi
 
 # ── Per-instance scratch drives and configs ─────────────────────────────────
 # The scratch image is mkfs'd every launch so runs stay comparable -- the same
@@ -247,9 +259,11 @@ cleanup() {
     sudo rm -rf "$API_SOCKET_FOLDER" "$FC_RUN_DIR"
     for (( k=0; k<NUM_INSTANCES; k++ )); do
         sudo ip link del "$(fc_tap "$k")" 2>/dev/null || true
-        # Leaves a stale cpuset behind otherwise, which fc_reserved_cpus reads.
         sudo rmdir "$CGROUP/vm$k" 2>/dev/null || true
     done
+    # Releases the pool back to the whole host, which fc_reserved_cpus reads.
+    [[ -e "$CGROUP/cpuset.cpus" ]] && { echo "" | sudo tee "$CGROUP/cpuset.cpus" >/dev/null 2>&1 || true; }
+    return 0
 }
 trap cleanup EXIT INT TERM
 
@@ -262,9 +276,7 @@ for (( k=0; k<NUM_INSTANCES; k++ )); do
     # Pre-created because the redirect below runs as root and would otherwise
     # leave a root-owned log behind.
     sudo install -o "$LOG_OWNER" -m 644 /dev/null "$console"
-    pinmsg=""
-    [[ -n "${VM_CPUS[k]:-}" ]] && pinmsg=" cpus ${VM_CPUS[k]} node ${VM_NODE[k]}"
-    echo "Starting Firecracker instance $k on $SOCKET (guest $(fc_guest_ip "$k") via $(fc_tap "$k"))${pinmsg} → $console"
+    echo "Starting Firecracker instance $k on $SOCKET (guest $(fc_guest_ip "$k") via $(fc_tap "$k")) → $console"
     # The subshell enrolls itself, then execs, so the quota binds to the VM
     # process rather than to this launcher.
     (
@@ -273,14 +285,9 @@ for (( k=0; k<NUM_INSTANCES; k++ )); do
             # bash forks for the echo, so it would expand to a child that has
             # already exited, and the kernel rejects a dead PID with ESRCH.
             vm_pid=$BASHPID
+            # The pool is inherited from the parent cgroup, so a leaf only has
+            # to carry its own quota.
             sudo mkdir -p "$CGROUP/vm$k"
-            # cpuset before cgroup.procs, so the VM never runs unpinned.
-            if [[ -n "${VM_CPUS[k]:-}" ]]; then
-                echo "${VM_CPUS[k]}" | sudo tee "$CGROUP/vm$k/cpuset.cpus" >/dev/null \
-                    || warn "instance $k: could not set cpuset.cpus -- running unpinned."
-                echo "${VM_NODE[k]}" | sudo tee "$CGROUP/vm$k/cpuset.mems" >/dev/null \
-                    || warn "instance $k: could not set cpuset.mems -- memory not node-bound."
-            fi
             # Non-fatal: an unmetered VM still runs.
             echo "$CPU_MAX $CPU_PERIOD_US" | sudo tee "$CGROUP/vm$k/cpu.max" >/dev/null \
                 || warn "instance $k: could not set cpu.max -- running without a CPU quota."
