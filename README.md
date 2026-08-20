@@ -1,4 +1,5 @@
-# Firecracker Based Lambda Emulator
+# MiniLambda
+## Firecracker Based Lambda Emulator
 
 An AWS Lambda emulator built on [Firecracker](https://github.com/firecracker-microvm/firecracker) microVMs, running actual AWS Lambda base images. In head-to-head benchmarking against real AWS Lambda on identical hardware, observed performance differs by approximately 0.5% in SAAF metrics overall.
 
